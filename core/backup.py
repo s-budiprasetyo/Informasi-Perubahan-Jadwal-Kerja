@@ -12,6 +12,11 @@ def _get(secrets, key):
 
 def _creds_from(secrets):
     info = _get(secrets, 'gcp_service_account')
+    if not info:
+        raw = _get(secrets, 'gcp_json')          # seluruh isi file JSON ditempel apa adanya
+        if raw:
+            try: info = json.loads(raw)
+            except Exception: info = None
     sheet_id = _get(secrets, 'backup_sheet_id')
     if info and sheet_id: return dict(info), sheet_id
     path = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON', 'service_account.json')
