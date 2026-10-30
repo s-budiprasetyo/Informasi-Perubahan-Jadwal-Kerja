@@ -4,7 +4,7 @@ import os, io, tempfile, datetime
 import pandas as pd
 import streamlit as st
 
-from core.consts import BULAN_ID, BULAN_ABBR, ym_label, prev_ym, sheet_suffix, month_len
+from core.consts import next_ym, BULAN_ID, BULAN_ABBR, ym_label, prev_ym, sheet_suffix, month_len
 from core.parsers import parse_jadwal, parse_hrd
 from core import engine, backup
 from core.inf_writer import render_inf
@@ -118,6 +118,11 @@ def plan_tables(plan):
 XL = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 
+def recap_of(dept, ym, snap):
+    """Isi kolom saldo bulan lalu & POTONG CUTI di Jadwal Kerja: {nik: {'open','cuti'}}."""
+    return {p['nik']: dict(open=store.opening(dept, ym, p['nik']), cuti=store.cuti_sum(dept, ym, p['nik'])) for p in snap['people']}
+
+
 def do_save():
     """Dipanggil saat pengguna memilih 'Simpan ke riwayat & unduh'. Satu-satunya tempat data masuk riwayat."""
     o = st.session_state['out']
@@ -186,7 +191,7 @@ def review(kind):
 dept = st.sidebar.selectbox('Departemen', list(DEPTS), format_func=lambda k: f"{k} - {DEPTS[k]['label']}", key='dept_sel')
 cfg = DEPTS[dept]
 st.sidebar.caption(cfg['note'])
-page = st.sidebar.radio('Menu', ['Buat Jadwal', 'Riwayat', 'Saldo Hari', 'Pengaturan'])
+page = st.sidebar.radio('Menu', ['Buat Jadwal', 'Riwayat', 'Saldo Hari', 'Potong Cuti', 'Pengaturan'])
 st.sidebar.caption('PT. Surya Pertiwi Nusantara - Gresik')
 if st.sidebar.button('Keluar'):
     st.session_state.clear(); st.rerun()
@@ -207,6 +212,16 @@ if page == 'Buat Jadwal':
     st.caption(f'Riwayat {ym_label(ym)}: ' + (', '.join(f'R{r}' for r in have) if have else 'belum ada') +
                f'  |  Yang akan dibuat: **R{rev}**' + ('  ⚠️ menimpa revisi yang sudah ada' if rev in have else ''))
 
+    nd = month_len(ym)
+    if rev == 0:
+        holidays = st.multiselect('📅 Hari nasional bulan ini (kosongkan bila tidak ada)', list(range(1, nd + 1)),
+                                  default=store.get_setting(dept, f'holidays:{ym}', []), key=f'hol_{dept}_{ym}',
+                                  format_func=lambda d: f'{d} {BULAN_ABBR[int(ym[5:]) - 1]}',
+                                  help='Hari nasional tidak terbaca dari file HRD. Pilih tanggalnya; libur di Jadwal pada tanggal itu tidak jadi perubahan, '
+                                       'dan target hari kerja orang yang dasarnya masuk di tanggal itu berkurang 1.')
+    else:
+        holidays = (store.get_rev(dept, ym, rev - 1) or {}).get('plan', {}).get('holidays') or []
+        if holidays: st.caption('Hari nasional bulan ini (dari R0): ' + ', '.join(map(str, holidays)))
     stored_hrd = store.get_hrd(dept, ym)
     need_hrd = rev == 0 or stored_hrd is None
     b1, b2 = st.columns(2)
@@ -236,16 +251,6 @@ if page == 'Buat Jadwal':
             st.error(f'Revisi R{rev - 1} belum tersimpan, jadi R{rev} tidak punya pembanding.'); st.stop()
         prev = r['snapshot']
 
-    nd = month_len(ym)
-    if rev == 0:
-        holidays = st.multiselect('Hari nasional bulan ini (jadwal libur serentak - tidak dibuatkan perubahan)', list(range(1, nd + 1)),
-                                  default=store.get_setting(dept, f'holidays:{ym}', []), key=f'hol_{dept}_{ym}',
-                                  format_func=lambda d: f'{d} {BULAN_ABBR[int(ym[5:]) - 1]}',
-                                  help='Hari nasional tidak terbaca dari file HRD. Pilih tanggalnya; libur di Jadwal pada tanggal itu tidak jadi perubahan, '
-                                       'dan target hari kerja orang yang dasarnya masuk di tanggal itu berkurang 1.')
-    else:
-        holidays = prev.get('holidays') if False else (store.get_rev(dept, ym, rev - 1)['plan'].get('holidays') or [])
-        if holidays: st.caption('Hari nasional bulan ini (dari R0): ' + ', '.join(map(str, holidays)))
     anoms = engine.detect(jad, hrd_rows, prev, cfg)
     saved = store.get_decisions(dept, ym)
     ACT = ('pws_mismatch', 'hrd_only', 'jadwal_only', 'late_start')
@@ -319,7 +324,7 @@ if page == 'Buat Jadwal':
         st.session_state['out'] = dict(
             dept=dept, ym=ym, rev=rev, info=info, plan=plan, snap=snap, basis=basis, decisions=decisions, holidays=holidays,
             jname=f_j.name, jbytes=f_j.getvalue(), hname=f_h.name if f_h else '', hrd_rows=hrd_rows if f_h else None,
-            inf=(file_name(dept, ym, rev), data), jad=(jadwal_name(dept, ym, rev), make_jadwal(f_j.getvalue(), rev, gen)), saved=False)
+            inf=(file_name(dept, ym, rev), data), jad=(jadwal_name(dept, ym, rev), make_jadwal(f_j.getvalue(), rev, gen, recap_of(dept, ym, snap))), saved=False)
         st.session_state.pop('bk', None)
     o = st.session_state.get('out')
     if o and o['dept'] == dept and o['ym'] == ym and o['rev'] == rev:
@@ -347,7 +352,7 @@ elif page == 'Riwayat':
     data, info = render_bytes(d_, rec['plan'], r_, datetime.date.today())
     c1, c2 = st.columns(2)
     jf = store.get_file(d_, y_, r_)
-    if jf: c1.download_button('⬇️ Unduh Jadwal Kerja (tanggal header = hari ini)', make_jadwal(jf[1], r_, datetime.date.today()),
+    if jf: c1.download_button('⬇️ Unduh Jadwal Kerja (tanggal header = hari ini)', make_jadwal(jf[1], r_, datetime.date.today(), recap_of(d_, y_, rec['snapshot'])),
                               jadwal_name(d_, y_, r_), XL, use_container_width=True)
     else: c1.info('Berkas Jadwal Kerja revisi ini tidak tersimpan di database ini.')
     c2.download_button('⬇️ Unduh Informasi Perubahan Jadwal (tanggal header = hari ini)', data, file_name(d_, y_, r_), XL,
@@ -364,15 +369,66 @@ elif page == 'Riwayat':
             st.rerun()
 
 # =====================================================================
+elif page == 'Potong Cuti':
+    st.title('Potong cuti untuk mengurangi kurang hari')
+    st.caption('Kurang hari bertambah/berkurang mengikuti jadwal. Halaman ini mencatat kurang hari yang dipotong dengan cuti. '
+               'Hasilnya masuk ke kolom POTONG CUTI di Jadwal Kerja, ke Saldo Hari, dan ke Google Sheets (potong_cuti_%s).' % dept)
+    months = store.ledger_months(dept)
+    if not months: st.info('Belum ada saldo. Simpan minimal satu revisi dulu (menu Buat Jadwal) agar daftar karyawan dan saldo awal tersedia.'); st.stop()
+    ym = st.selectbox('Dipotong dari saldo bulan', months, format_func=ym_label,
+                      help='Pilih bulan yang kurang harinya dikurangi (mis. Oktober). Saldo bulan-bulan sesudahnya ikut dihitung ulang.')
+    led = {r['nik']: r for r in store.get_ledger(dept, ym)}
+    if st.session_state.get('cuti_msg'): st.success(st.session_state.pop('cuti_msg'))
+    st.subheader('Catat potong cuti baru')
+    c1, c2 = st.columns([2, 1])
+    nik = c1.selectbox('Karyawan', list(led), format_func=lambda n: f"{n} - {led[n]['nama']}   (sisa kurang {led[n]['saldo_akhir']:g} hari)")
+    tgl = c2.date_input('Tanggal pengajuan', datetime.date.today(), key=f'cuti_tgl_{dept}')
+    c3, c4 = st.columns([1, 2])
+    hari = c3.number_input('Hari dipotong', 0.5, 31.0, 1.0, step=0.5, key=f'cuti_hari_{dept}')
+    ket = c4.text_input('Keterangan (opsional)', key=f'cuti_ket_{dept}')
+    cur = led[nik]['saldo_akhir']
+    ok = True
+    if hari > cur:
+        st.warning(f"Sisa kurang hari {led[nik]['nama']} hanya {cur:g}; potongan {hari:g} hari membuat saldo menjadi {cur - hari:g} (lebih hari).")
+        ok = st.checkbox('Tetap simpan', key=f'cuti_ok_{dept}')
+    else:
+        st.caption(f'Sisa kurang hari setelah dipotong: **{cur - hari:g}** (sebelumnya {cur:g}).')
+    if st.button('💾 Simpan potong cuti', type='primary', disabled=not ok):
+        store.add_cuti(dept, ym, nik, led[nik]['nama'], tgl, hari, ket)
+        msg = 'Tersimpan.'
+        if backup.configured(secrets_obj()):
+            try: backup.push(store, secrets_obj(), list(DEPTS)); msg += ' Backup Google Sheets berhasil.'
+            except Exception as e: msg += f' (Backup Google Sheets gagal: {e})'
+        st.session_state['cuti_msg'] = msg; st.rerun()
+    st.divider()
+    st.subheader('Riwayat potong cuti')
+    log = store.cuti_log(dept)
+    if not log: st.info('Belum ada potong cuti.')
+    else:
+        show = pd.DataFrame([{'Bulan saldo': ym_label(r['ym']), 'NIK': r['nik'], 'Nama': r['nama'], 'Tgl pengajuan': r['tgl'],
+                              'Hari dipotong': r['hari'], 'Sisa kurang hari': r['sisa'], 'Keterangan': r['ket']} for r in log])
+        f = st.selectbox('Filter karyawan', ['(semua)'] + sorted(show['Nama'].unique()))
+        if f != '(semua)': show = show[show['Nama'] == f]
+        st.dataframe(show, use_container_width=True, hide_index=True)
+        with st.expander('🗑️ Hapus catatan potong cuti'):
+            pick = st.selectbox('Pilih catatan', log, format_func=lambda r: f"{r['nama']} | {r['tgl']} | {r['hari']:g} hari ({ym_label(r['ym'])})")
+            if st.checkbox('Saya yakin ingin menghapus catatan ini') and st.button('Hapus catatan'):
+                store.delete_cuti(dept, pick['id'])
+                if backup.configured(secrets_obj()):
+                    try: backup.push(store, secrets_obj(), list(DEPTS))
+                    except Exception as e: st.error(f'Backup gagal: {e}')
+                st.rerun()
+
+# =====================================================================
 elif page == 'Saldo Hari':
     st.title('Saldo kurang / lebih hari')
     months = store.ledger_months(dept)
     if not months: st.info('Belum ada data. Saldo terisi saat Anda menyimpan revisi.'); st.stop()
     ym = st.selectbox('Bulan', months, format_func=ym_label)
-    df = pd.DataFrame(store.get_ledger(dept, ym))[['nik', 'nama', 'target', 'worked', 'kurang', 'saldo_awal', 'saldo_akhir']]
-    df.columns = ['NIK', 'Nama', 'Target', 'Hari kerja', 'Kurang hari (AN)', 'Saldo awal', 'Saldo akhir']
+    df = pd.DataFrame(store.get_ledger(dept, ym))[['nik', 'nama', 'target', 'worked', 'kurang', 'saldo_awal', 'cuti', 'saldo_akhir']]
+    df.columns = ['NIK', 'Nama', 'Target', 'Hari kerja', 'Kurang hari (AN)', 'Saldo awal', 'Potong cuti', 'Saldo akhir']
     st.dataframe(df, use_container_width=True, hide_index=True)
-    st.caption('Saldo akhir = saldo awal + kurang hari bulan ini. Contoh: Okt kurang 4, Nov lebih 1 → sisa 3.')
+    st.caption('Saldo akhir = saldo awal + kurang hari bulan ini - potong cuti. Contoh: Okt kurang 4, Nov lebih 1 → sisa 3. Potong cuti dicatat di menu "Potong Cuti".')
     with st.expander('Koreksi saldo awal manual'):
         nik = st.selectbox('Karyawan', df['NIK'], format_func=lambda n: f"{n} - {df.set_index('NIK').loc[n, 'Nama']}")
         v = st.number_input('Saldo awal', value=float(df.set_index('NIK').loc[nik, 'Saldo awal']), step=1.0)

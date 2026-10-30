@@ -140,3 +140,29 @@ def test_holiday_suppresses_change():
     q = next(p for p in p1['people'] if p['nik'] == nik)
     assert all(day not in ds for a, b, ds in q['ents'])
     assert p1['holidays'] == [day]
+
+
+def test_potong_cuti_chain_and_recap(tmp_path):
+    st = Store(str(tmp_path / 'c.db'))
+    snap = lambda k: {'people': [dict(nik='260', nama='A', target=22, worked=22 - k, kurang=k)]}
+    st.save_ledger('SK', '2026-10', snap(4)); st.save_ledger('SK', '2026-11', snap(-1))
+    st.add_cuti('SK', '2026-10', '260', 'A', '2026-10-20', 1, 'cuti')
+    st.add_cuti('SK', '2026-10', '260', 'A', '2026-10-25', 2, '')
+    log = st.cuti_log('SK')
+    assert [r['sisa'] for r in sorted(log, key=lambda r: r['tgl'])] == [3, 1]
+    assert st.get_ledger('SK', '2026-10')[0]['saldo_akhir'] == 1
+    assert st.get_ledger('SK', '2026-11')[0]['saldo_awal'] == 1 and st.get_ledger('SK', '2026-11')[0]['saldo_akhir'] == 0
+    st.delete_cuti('SK', log[0]['id'])
+    assert st.get_ledger('SK', '2026-11')[0]['saldo_akhir'] == 2
+    # ekspor/impor ikut membawa potong cuti
+    st2 = Store(':memory:'); st2.import_all(st.export_all('SK'), 'SK')
+    assert len(st2.cuti_log('SK')) == 1 and st2.get_ledger('SK', '2026-11')[0]['saldo_akhir'] == 2
+
+
+def test_jadwal_recap_fills_cuti_column():
+    from core.jadwal_out import make_jadwal, _locate, _recap_map
+    d = open(A + 'dddeacc0-JADWAL_KERJA_SK.xlsx', 'rb').read()
+    t, _, _ = _locate(d); c, o, rows = _recap_map(d, t)
+    out = make_jadwal(d, 1, datetime.date(2026, 10, 31), {'260': {'cuti': 1.5, 'open': 3}})
+    ws = openpyxl.load_workbook(__import__('io').BytesIO(out))[t]
+    assert ws.cell(rows['260'], c).value == 1.5 and ws.cell(rows['260'], o).value == 3

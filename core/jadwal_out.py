@@ -1,6 +1,7 @@
 """Berkas 'Jadwal Kerja' hasil render: salinan file Jadwal Kerja yang diunggah (format & gambar asli utuh),
 dengan 'Revisi : n' dan tanggal 'Gresik, ...' diperbarui."""
 import io, re, zipfile
+from openpyxl.utils import get_column_letter, column_index_from_string
 import openpyxl
 from lxml import etree
 from .consts import BULAN_ID
@@ -23,6 +24,51 @@ def _locate(data):
     raise ValueError('Sel "Revisi : n" / "Gresik, ..." tidak ditemukan di Jadwal Kerja.')
 
 
+def _recap_map(data, title):
+    """Cari kolom 'POTONG CUTI'/'POT CUTI' & kolom saldo bulan lalu ('KRNG. HARI ...'/'LAMA'), serta baris tiap NIK."""
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
+    ws = wb[title]; cuti = open_ = None; nik_col = hdr = None
+    for row in ws.iter_rows(min_row=1, max_row=14):
+        for c in row:
+            v = str(c.value or '').strip().upper()
+            if cuti is None and v in ('POTONG CUTI', 'POT CUTI'): cuti = c.column
+            if open_ is None and (v.startswith('KRNG. HARI') or v.startswith('KRNG HARI') or v == 'LAMA'): open_ = c.column
+            if nik_col is None and 'PRN SAP' in v: nik_col, hdr = c.column, c.row
+    rows = {}
+    if nik_col:
+        for r in ws.iter_rows(min_row=hdr + 1, min_col=nik_col, max_col=nik_col):
+            c = r[0]; v = re.sub(r'\D', '', str(c.value or ''))
+            if v and v not in rows: rows[v] = c.row
+    return cuti, open_, rows
+
+
+def _setnum(root, ref, val):
+    """Isi angka di sel; buat sel bila belum ada (urut kolom). Mengembalikan True bila diisi."""
+    col = re.match(r'[A-Z]+', ref).group(); rown = int(ref[len(col):]); ci = column_index_from_string(col)
+    for r in root.iter('{%s}row' % NS):
+        if int(r.get('r')) != rown: continue
+        cell = None
+        for c in r.findall('{%s}c' % NS):
+            if c.get('r') == ref: cell = c; break
+        if cell is None:
+            cell = etree.Element('{%s}c' % NS); cell.set('r', ref)
+            pos = len(r)
+            for i, c in enumerate(r.findall('{%s}c' % NS)):
+                if column_index_from_string(re.match(r'[A-Z]+', c.get('r')).group()) > ci: pos = list(r).index(c); break
+            r.insert(pos, cell)
+        for ch in list(cell): cell.remove(ch)
+        if 't' in cell.attrib: del cell.attrib['t']
+        v = etree.SubElement(cell, '{%s}v' % NS); v.text = repr(float(val)) if float(val) != int(val) else str(int(val))
+        return True
+    return False
+
+
+def _cell_empty(root, ref):
+    for c in root.iter('{%s}c' % NS):
+        if c.get('r') == ref: return c.find('{%s}v' % NS) is None and c.find('{%s}is' % NS) is None and c.find('{%s}f' % NS) is None
+    return True
+
+
 def _setcell(root, ref, text):
     for c in root.iter('{%s}c' % NS):
         if c.get('r') == ref:
@@ -34,7 +80,9 @@ def _setcell(root, ref, text):
     return False
 
 
-def make_jadwal(data, rev, gen_date):
+def make_jadwal(data, rev, gen_date, recap=None):
+    """recap: {nik: {'cuti': hari potong cuti, 'open': saldo kurang hari bulan lalu}} -> diisi ke kolom POTONG CUTI / saldo bulan lalu.
+    Kolom saldo bulan lalu hanya diisi bila sel masih kosong (tidak menimpa isian manual)."""
     title, rev_ref, date_ref = _locate(data)
     zin = zipfile.ZipFile(io.BytesIO(data))
     wbx = etree.fromstring(zin.read('xl/workbook.xml'))
@@ -45,6 +93,13 @@ def make_jadwal(data, rev, gen_date):
     root = etree.fromstring(zin.read(part))
     if rev_ref: _setcell(root, rev_ref, f'Revisi : {rev}')
     if date_ref: _setcell(root, date_ref, f'Gresik, {gen_date.day} {BULAN_ID[gen_date.month - 1]} {gen_date.year}')
+    if recap:
+        cuti_c, open_c, rows = _recap_map(data, title)
+        for nik, rc in recap.items():
+            r = rows.get(str(nik))
+            if not r: continue
+            if cuti_c and rc.get('cuti'): _setnum(root, f'{get_column_letter(cuti_c)}{r}', rc['cuti'])
+            if open_c and rc.get('open') and _cell_empty(root, f'{get_column_letter(open_c)}{r}'): _setnum(root, f'{get_column_letter(open_c)}{r}', rc['open'])
     out = io.BytesIO()
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         for item in zin.infolist():

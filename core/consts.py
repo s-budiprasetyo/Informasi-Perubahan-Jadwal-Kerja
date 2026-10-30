@@ -45,6 +45,11 @@ def prev_ym(ym):
     return f'{y - 1}-12' if m == 1 else f'{y}-{m - 1:02d}'
 
 
+def next_ym(ym):
+    y, m = map(int, ym.split('-'))
+    return f'{y + 1}-01' if m == 12 else f'{y}-{m + 1:02d}'
+
+
 def ym_label(ym):
     y, m = map(int, ym.split('-'))
     return f'{BULAN_ID[m - 1]} {y}'

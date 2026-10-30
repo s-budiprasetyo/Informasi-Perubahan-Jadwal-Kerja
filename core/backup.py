@@ -55,10 +55,14 @@ def push(store, secrets, depts):
         parts = [data[i:i + CHUNK] for i in range(0, len(data), CHUNK)] or ['']
         ws.update(values=[[i, p] for i, p in enumerate(parts)], range_name='A1'); total += len(parts)
         led = _ws(sh, f'saldo_hari_{d}'); led.clear()
-        rows = [['bulan', 'nik', 'nama', 'target', 'hari_kerja', 'kurang_hari', 'saldo_awal', 'saldo_akhir']]
-        rows += [[r['ym'], r['nik'], r['nama'], r['target'], r['worked'], r['kurang'], r['saldo_awal'], r['saldo_akhir']]
+        rows = [['bulan', 'nik', 'nama', 'target', 'hari_kerja', 'kurang_hari', 'potong_cuti', 'saldo_awal', 'saldo_akhir']]
+        rows += [[r['ym'], r['nik'], r['nama'], r['target'], r['worked'], r['kurang'], r.get('cuti') or 0, r['saldo_awal'], r['saldo_akhir']]
                  for r in ex['ledger']]
         led.update(values=rows, range_name='A1')
+        pc = _ws(sh, f'potong_cuti_{d}'); pc.clear()
+        crow = [['bulan_saldo', 'nik', 'nama', 'tanggal_pengajuan', 'hari_dipotong', 'sisa_kurang_hari_setelahnya', 'keterangan']]
+        crow += [[r['ym'], r['nik'], r['nama'], r['tgl'], r['hari'], r['sisa'], r['ket']] for r in reversed(store.cuti_log(d))]
+        pc.update(values=crow, range_name='A1')
         hist = _ws(sh, f'riwayat_{d}'); hist.clear()
         hrows = [['bulan', 'revisi', 'dibuat', 'dasar', 'file_jadwal', 'file_hrd']]
         hrows += [[r['ym'], r['rev'], r['created'], r['basis'], r['jadwal_file'], r['hrd_file']] for r in store.list_revs(d)]

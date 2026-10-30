@@ -49,3 +49,10 @@ Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.
 ## Karyawan baru di tengah bulan & hari nasional
 - Karyawan yang libur dari tgl 1 sampai tgl mulai: muncul di lonceng (R0) "mulai tgl X?". Bila *ya*, hari sebelum tgl mulai tidak dibuatkan perubahan dan tanggal perubahan regu = tgl mulai (bisa diubah).
 - Hari nasional: pilih tanggalnya; libur di Jadwal pada tanggal itu tidak jadi perubahan, target hari kerja orang yang dasarnya masuk di tanggal itu berkurang 1.
+
+## Potong cuti (mengurangi kurang hari)
+- Menu **Potong Cuti**: pilih bulan saldo, karyawan, tanggal pengajuan, jumlah hari, keterangan → *Simpan potong cuti*. Peringatan muncul bila potongan melebihi sisa kurang hari (boleh tetap disimpan).
+- Saldo akhir = saldo awal + kurang hari (AN) − potong cuti. Saldo bulan-bulan sesudahnya dihitung ulang otomatis.
+- Riwayat potong cuti memuat tanggal pengajuan, hari dipotong, dan sisa kurang hari setelahnya; bisa difilter per karyawan dan dihapus per catatan.
+- Google Sheets: lembar `potong_cuti_SK` / `potong_cuti_QC` (dan kolom potong_cuti di `saldo_hari_*`). Ikut dipulihkan lewat tombol Pulihkan.
+- Jadwal Kerja hasil unduh: kolom **POTONG CUTI / POT CUTI** terisi otomatis; kolom saldo bulan lalu (KRNG. HARI.../LAMA) hanya diisi bila selnya masih kosong (isian manual tidak ditimpa).

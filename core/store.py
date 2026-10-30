@@ -11,9 +11,10 @@ CREATE TABLE IF NOT EXISTS ledger(dept TEXT, ym TEXT, nik TEXT, nama TEXT, targe
   saldo_awal REAL, saldo_akhir REAL, PRIMARY KEY(dept,ym,nik));
 CREATE TABLE IF NOT EXISTS files(dept TEXT, ym TEXT, rev INTEGER, name TEXT, blob BLOB, PRIMARY KEY(dept,ym,rev));
 CREATE TABLE IF NOT EXISTS settings(dept TEXT, key TEXT, value TEXT, PRIMARY KEY(dept,key));
+CREATE TABLE IF NOT EXISTS cuti(id INTEGER PRIMARY KEY AUTOINCREMENT, dept TEXT, nik TEXT, nama TEXT, tgl TEXT, hari REAL, ket TEXT, ym TEXT);
 CREATE TABLE IF NOT EXISTS opening(dept TEXT, ym TEXT, nik TEXT, saldo REAL, PRIMARY KEY(dept,ym,nik));
 """
-TABLES = ['revisions', 'hrd', 'decisions', 'ledger', 'opening', 'settings']
+TABLES = ['revisions', 'hrd', 'decisions', 'ledger', 'opening', 'settings', 'cuti']
 
 
 class Store:
@@ -23,6 +24,8 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA); self.lock = threading.Lock()
+        try: self.db.execute('ALTER TABLE ledger ADD COLUMN cuti REAL DEFAULT 0'); self.db.commit()
+        except sqlite3.OperationalError: pass
 
     # ---- revisi
     def revs(self, dept, ym):
@@ -94,15 +97,52 @@ class Store:
         return r[0] if r else 0
 
     def save_ledger(self, dept, ym, snapshot):
-        """Kurang Hari (kolom AN) = target - hari kerja. saldo_akhir = saldo_awal + kurang
+        """Kurang Hari (kolom AN) = target - hari kerja. saldo_akhir = saldo_awal + kurang - potong cuti
         (positif = masih berhutang hari, negatif = lebih hari)."""
         with self.lock:
             self.db.execute('DELETE FROM ledger WHERE dept=? AND ym=?', (dept, ym))
             for p in snapshot['people']:
-                aw = self.opening(dept, ym, p['nik'])
-                self.db.execute('INSERT INTO ledger VALUES(?,?,?,?,?,?,?,?,?)',
-                                (dept, ym, p['nik'], p['nama'], p['target'], p['worked'], p['kurang'], aw, aw + p['kurang']))
+                aw = self.opening(dept, ym, p['nik']); ct = self.cuti_sum(dept, ym, p['nik'])
+                self.db.execute('INSERT INTO ledger(dept,ym,nik,nama,target,worked,kurang,saldo_awal,saldo_akhir,cuti) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                                (dept, ym, p['nik'], p['nama'], p['target'], p['worked'], p['kurang'], aw, aw + p['kurang'] - ct, ct))
             self.db.commit()
+
+    def recalc_ledgers(self, dept, from_ym):
+        """Hitung ulang saldo semua bulan >= from_ym (urut), mis. setelah potong cuti berubah."""
+        for ym in sorted(m for m in self.ledger_months(dept) if m >= from_ym):
+            rows = self.get_ledger(dept, ym)
+            self.save_ledger(dept, ym, {'people': [dict(nik=r['nik'], nama=r['nama'], target=r['target'], worked=r['worked'],
+                                                         kurang=r['kurang']) for r in rows]})
+
+    # ---- potong cuti
+    def add_cuti(self, dept, ym, nik, nama, tgl, hari, ket=''):
+        with self.lock:
+            self.db.execute('INSERT INTO cuti(dept,nik,nama,tgl,hari,ket,ym) VALUES(?,?,?,?,?,?,?)', (dept, nik, nama, str(tgl), float(hari), ket, ym))
+            self.db.commit()
+        self.recalc_ledgers(dept, ym)
+
+    def delete_cuti(self, dept, cid):
+        r = self.db.execute('SELECT ym FROM cuti WHERE dept=? AND id=?', (dept, cid)).fetchone()
+        if not r: return
+        with self.lock:
+            self.db.execute('DELETE FROM cuti WHERE dept=? AND id=?', (dept, cid)); self.db.commit()
+        self.recalc_ledgers(dept, r[0])
+
+    def cuti_sum(self, dept, ym, nik):
+        r = self.db.execute('SELECT COALESCE(SUM(hari),0) FROM cuti WHERE dept=? AND ym=? AND nik=?', (dept, ym, nik)).fetchone()
+        return r[0] or 0
+
+    def cuti_log(self, dept, ym=None):
+        """Daftar potong cuti + sisa kurang hari SETELAH tiap pengajuan (urut tanggal pengajuan per karyawan per bulan)."""
+        q = 'SELECT * FROM cuti WHERE dept=?' + (' AND ym=?' if ym else '') + ' ORDER BY ym, nik, tgl, id'
+        out = []; run = {}
+        for r in self.db.execute(q, (dept, ym) if ym else (dept,)):
+            r = dict(r); key = (r['ym'], r['nik'])
+            if key not in run:
+                lg = self.db.execute('SELECT saldo_awal,kurang FROM ledger WHERE dept=? AND ym=? AND nik=?', (dept, r['ym'], r['nik'])).fetchone()
+                run[key] = (lg['saldo_awal'] + lg['kurang']) if lg else self.opening(dept, r['ym'], r['nik'])
+            run[key] -= r['hari']; r['sisa'] = run[key]; out.append(r)
+        return sorted(out, key=lambda r: (r['ym'], r['tgl'], r['id']), reverse=True)
 
     def get_ledger(self, dept, ym):
         return [dict(r) for r in self.db.execute('SELECT * FROM ledger WHERE dept=? AND ym=? ORDER BY nama', (dept, ym))]
