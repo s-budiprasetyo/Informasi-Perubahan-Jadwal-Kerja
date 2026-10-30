@@ -9,11 +9,13 @@ BULAN_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Ok
 HOURS = {
     'DS04': '(08:00 s/d 17:00)', 'DS02': '(07:00 s/d 16:00)',
     'P004': '(07:00 s/d 16:00)', 'S005': '(16:00 s/d 00:30)',
+    'DS08': '(06:00 s/d 15:00)', 'DS07': '(09:00 s/d 18:00)',
     'M003': '(00:00 s/d 08:00)', 'P005': '(08:00 s/d 16:00)', 'S004': '(16:00 s/d 24:00)',
 }
 # teks sheet PERUBAHAN REGU (baris ke-2)
 REGU_TXT = {'05D004': 'DS04(08:00 s/d 17:00)', '05D002': 'DS02(07:00 s/d 16:00)',
             '05D035': 'DS04(08:00 s/d 17:00)',
+            '05D008': 'DS08(06:00 s/d 15:00)', '05D007': 'DS07(09:00 s/d 18:00)',
             '2G0301': 'S005 & P004', '2G0302': 'P004 & S005'}
 DAY_PWS = ('05D004', '05D002', '05D035')          # regu "jam 8" -> halaman pertama
 # urutan baris dalam form (sesuai contoh September)
@@ -30,7 +32,7 @@ def norm(v):
     s = str(v).strip().upper()
     if s.startswith('DS'):
         s = s.replace('O', '0')
-    return 'OFF' if s in ('IOFF', 'OFF') else s
+    return 'OFF' if s in ('IOFF', 'OFF', '-', '–') else s
 
 
 def month_len(ym):

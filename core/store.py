@@ -9,9 +9,10 @@ CREATE TABLE IF NOT EXISTS hrd(dept TEXT, ym TEXT, data TEXT, PRIMARY KEY(dept,y
 CREATE TABLE IF NOT EXISTS decisions(dept TEXT, ym TEXT, nik TEXT, value TEXT, PRIMARY KEY(dept,ym,nik));
 CREATE TABLE IF NOT EXISTS ledger(dept TEXT, ym TEXT, nik TEXT, nama TEXT, target REAL, worked REAL, kurang REAL,
   saldo_awal REAL, saldo_akhir REAL, PRIMARY KEY(dept,ym,nik));
+CREATE TABLE IF NOT EXISTS settings(dept TEXT, key TEXT, value TEXT, PRIMARY KEY(dept,key));
 CREATE TABLE IF NOT EXISTS opening(dept TEXT, ym TEXT, nik TEXT, saldo REAL, PRIMARY KEY(dept,ym,nik));
 """
-TABLES = ['revisions', 'hrd', 'decisions', 'ledger', 'opening']
+TABLES = ['revisions', 'hrd', 'decisions', 'ledger', 'opening', 'settings']
 
 
 class Store:
@@ -44,9 +45,9 @@ class Store:
                              json.dumps(plan), json.dumps(snapshot), jadwal_file, hrd_file))
             self.db.commit()
 
-    def list_revs(self):
-        return [dict(r) for r in self.db.execute(
-            'SELECT dept,ym,rev,created,basis,jadwal_file,hrd_file FROM revisions ORDER BY ym DESC,dept,rev DESC')]
+    def list_revs(self, dept=None):
+        q = 'SELECT dept,ym,rev,created,basis,jadwal_file,hrd_file FROM revisions' + (' WHERE dept=?' if dept else '') + ' ORDER BY ym DESC,dept,rev DESC'
+        return [dict(r) for r in self.db.execute(q, (dept,) if dept else ())]
 
     # ---- HRD
     def save_hrd(self, dept, ym, hrd_rows):
@@ -97,14 +98,31 @@ class Store:
     def is_empty(self):
         return self.db.execute('SELECT COUNT(*) FROM revisions').fetchone()[0] == 0
 
-    def export_all(self):
-        return {t: [dict(r) for r in self.db.execute(f'SELECT * FROM {t}')] for t in TABLES}
+    def export_all(self, dept=None):
+        out = {}
+        for t in TABLES:
+            q, args = (f'SELECT * FROM {t} WHERE dept=?', (dept,)) if dept else (f'SELECT * FROM {t}', ())
+            out[t] = [dict(r) for r in self.db.execute(q, args)]
+        return out
 
-    def import_all(self, data):
+    def import_all(self, data, dept=None):
         with self.lock:
             for t in TABLES:
-                self.db.execute(f'DELETE FROM {t}')
+                if dept: self.db.execute(f'DELETE FROM {t} WHERE dept=?', (dept,))
+                else: self.db.execute(f'DELETE FROM {t}')
                 for row in data.get(t, []):
-                    cols = list(row); self.db.execute(
-                        f'INSERT INTO {t}({",".join(cols)}) VALUES({",".join("?" * len(cols))})', [row[c] for c in cols])
+                    cols = list(row)
+                    self.db.execute(f'INSERT OR REPLACE INTO {t}({",".join(cols)}) VALUES({",".join("?" * len(cols))})',
+                                    [row[c] for c in cols])
             self.db.commit()
+
+    # ---- pengaturan per departemen (mis. susunan tim QC)
+    def set_setting(self, dept, key, value):
+        self.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?,?)', (dept, key, json.dumps(value))); self.db.commit()
+
+    def get_setting(self, dept, key, default=None):
+        r = self.db.execute('SELECT value FROM settings WHERE dept=? AND key=?', (dept, key)).fetchone()
+        return json.loads(r[0]) if r else default
+
+    def depts_with_data(self):
+        return [r[0] for r in self.db.execute('SELECT DISTINCT dept FROM revisions')]

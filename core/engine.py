@@ -4,6 +4,7 @@ R0  : Jadwal Kerja  vs  pola PWS dari HRD
 R>=1: Jadwal Kerja  vs  snapshot revisi sebelumnya
 """
 from collections import defaultdict
+import re
 from .consts import ORDER, DAY_PWS, HOURS, month_len
 
 
@@ -14,6 +15,19 @@ def patterns(hrd_rows):
     if '05D004' in pat:
         pat.setdefault('05D035', pat['05D004'])
     return pat
+
+
+def ensure_pat(pat, pws):
+    """Pola PWS yang belum ada di HRD (mis. 05D008) diturunkan dari pola hari-kerja 05D0nn:
+    hari masuk sama (Senin-Jumat), kode jam = 'DS' + dua digit terakhir."""
+    if not pws or pws in pat: return pat.get(pws)
+    m = re.fullmatch(r'05D0(\d\d)', pws)
+    if not m: return None
+    tpl = next((v for k, v in pat.items() if re.fullmatch(r'05D0\d\d', k) and k != '05D035'), None)
+    if tpl is None: return None
+    code = 'DS' + m.group(1)
+    pat[pws] = [code if x != 'OFF' else 'OFF' for x in tpl]
+    return pat[pws]
 
 
 def diffs(base, act):
@@ -45,10 +59,11 @@ def effective_date(act, newp):
     return 1
 
 
-def blend_base(old, new, act, pat):
-    """(baseline, regu_dict|None) untuk perbandingan R0."""
-    exempt = old == '05D035'
+def blend_base(old, new, act, pat, exempt_pws=('05D035',)):
+    """(baseline, regu_dict|None, exempt) untuk perbandingan R0."""
+    exempt = old in exempt_pws
     if exempt: old = '05D004'
+    ensure_pat(pat, new); ensure_pat(pat, old)
     newp, oldp = pat[new], pat[old]
     if exempt: return pat['05D004'], None, True
     if old == new: return newp, None, False
@@ -61,10 +76,12 @@ def _same_pws(a, b):
     return n(a) == n(b)
 
 
-def detect(jad, hrd_rows, prev=None):
+def detect(jad, hrd_rows, prev=None, cfg=None):
     """Daftar anomali (independen dari keputusan pengguna) untuk panel lonceng."""
     nd = month_len(jad['ym'])
+    cfg = cfg or {}
     pat = patterns(hrd_rows) if hrd_rows else {}
+    for p in jad['people']: ensure_pat(pat, p['pws'])
     out = []
     niks = {p['nik'] for p in jad['people']}
     prev_by = {p['nik']: p for p in prev['people']} if prev else {}
@@ -72,8 +89,10 @@ def detect(jad, hrd_rows, prev=None):
         nik = p['nik']
         s = hrd_rows.get(nik) if hrd_rows else None
         if nik not in prev_by and not s:
-            out.append(dict(kind='no_baseline', nik=nik, nama=p['nama'],
-                            msg='Tidak ada di file HRD maupun revisi sebelumnya - tidak ada pembanding, dilewati.'))
+            out.append(dict(kind='jadwal_only', nik=nik, nama=p['nama'], pws=p['pws'],
+                            options=['(pilih)', 'abaikan'] + sorted(k for k in pat if not k.startswith('4G')),
+                            msg=f"Ada di Jadwal Kerja (PWS {p['pws']}) tetapi tidak ada di file HRD maupun revisi sebelumnya. "
+                                'Pilih PWS lama (dasar HRD) untuk membandingkan, atau abaikan.'))
             continue
         if prev:
             if nik not in prev_by:
@@ -112,7 +131,7 @@ def detect(jad, hrd_rows, prev=None):
         for nik, s in hrd_rows.items():
             if nik not in niks:
                 out.append(dict(kind='hrd_only', nik=nik, nama=s['nama'], pws=s['pws'],
-                                options=['abaikan', 'SK', 'QCSK'],
+                                options=['abaikan', 'SK', 'QCSK'] if cfg.get('kind', 'sk') == 'sk' else ['abaikan', 'masukkan'],
                                 msg=f"Ada di HRD (PWS {s['pws']}) tetapi tidak ada di Jadwal Kerja."))
     if prev:
         for nik, q in prev_by.items():
@@ -122,12 +141,15 @@ def detect(jad, hrd_rows, prev=None):
     return out
 
 
-def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None):
+def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None):
     """-> (plan, snapshot).  decisions: {nik: value}; tgl_over: {nik: int}"""
     decisions = decisions or {}
     tgl_over = tgl_over or {}
+    cfg = cfg or {}
+    exempt_pws = tuple(cfg.get('exempt_pws', ('05D035',)))
     ym = jad['ym']; nd = month_len(ym)
     pat = patterns(hrd_rows) if hrd_rows else {}
+    for p in jad['people']: ensure_pat(pat, p['pws'])
     prev_by = {p['nik']: p for p in prev['people']} if prev else {}
     people_in = list(jad['people'])
     niks = {p['nik'] for p in people_in}
@@ -135,14 +157,18 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None):
     if hrd_rows and not prev:
         for nik, s in hrd_rows.items():
             d = decisions.get(nik)
-            if nik not in niks and d in ('SK', 'QCSK'):
-                people_in.append(dict(no=None, nama=s['nama'], nik=nik, item=None, seksi=d, pws=s['pws'],
+            if nik not in niks and d in ('SK', 'QCSK', 'masukkan'):
+                people_in.append(dict(no=None, nama=s['nama'], nik=nik, item=None, seksi='' if d == 'masukkan' else d, pws=s['pws'],
                                       days=list(s['days'][:nd])))
     plan_people, snap_people, skipped = [], [], []
     for j in people_in:
         nik = j['nik']; act = j['days'][:nd]
         s = hrd_rows.get(nik) if hrd_rows else None
-        new = decisions.get(nik) if decisions.get(nik) in pat else j['pws']
+        d = decisions.get(nik)
+        synthetic = False
+        if not s and not (prev and nik in prev_by) and d in pat:
+            s = dict(pws=d, nama=j['nama'], total=None, dept=None); synthetic = True   # PWS lama dipilih pengguna
+        new = d if (d in pat and not synthetic) else j['pws']
         regu = None; exempt = False
         if prev and nik in prev_by:
             q = prev_by[nik]
@@ -154,10 +180,10 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None):
             if not s:
                 skipped.append(nik); continue
             old = s['pws']
-            if old == '05D035': old = '05D004'
+            if old in exempt_pws: old = '05D004'
             if new not in pat or old not in pat:
                 skipped.append(nik); continue
-            base, regu, exempt = blend_base(s['pws'], new, act, pat)
+            base, regu, exempt = blend_base(s['pws'], new, act, pat, exempt_pws)
         if regu and nik in tgl_over:
             regu['tgl'] = int(tgl_over[nik])
         ents = order_entries(diffs(base, act))
@@ -168,6 +194,7 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None):
         worked = sum(1 for x in act if x != 'OFF')
         snap_people.append(dict(nik=nik, nama=j['nama'], nama_hrd=nama_hrd, seksi=j['seksi'], pws=new,
                                 days=act, exempt=exempt, target=target, worked=worked, kurang=target - worked))
-    plan = dict(ym=ym, people=plan_people, skipped=skipped)
+    pending = [p['nik'] for p in jad['people'] if decisions.get(p['nik']) == '(pilih)']
+    plan = dict(ym=ym, people=plan_people, skipped=skipped, pending=pending)
     snap = dict(ym=ym, people=snap_people)
     return plan, snap

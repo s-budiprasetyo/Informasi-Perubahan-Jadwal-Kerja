@@ -41,6 +41,15 @@ def fmt_dates(ds, bln, qc):
     return txt + (' ' + bln if qc else '\n' + bln)
 
 
+def fix_cached(root, date_txt):
+    """Sel rumus yang menunjuk tanggal header (=$P$3, =O3) diberi nilai cache baru."""
+    for c in root.iter(q('c')):
+        f = c.find(q('f'))
+        if f is not None and (f.text or '').replace('$', '') in ('P3', 'O3'):
+            for v in c.findall(q('v')): c.remove(v)
+            c.set('t', 'str'); etree.SubElement(c, q('v')).text = date_txt
+
+
 class Sheet:
     def __init__(s, path):
         s.tpl = etree.parse(path).getroot(); s.tree = etree.parse(path); s.root = s.tree.getroot()
@@ -100,7 +109,8 @@ class Sheet:
                 if rr == k: setcell(row, col, v)
         for ref in s.tmerges(tpl, tpl + 1): s.add_merge(s.shifted(ref, r0 - tpl))
 
-    def finish(s):
+    def finish(s, date_txt=None):
+        if date_txt: fix_cached(s.root, date_txt)
         s.mc.set('count', str(len(s.mc)))
         s.root.find(q('dimension')).set('ref', f'A1:AC{max(s.rows)}')
         sv = s.root.find(q('sheetViews'))[0]; sv.set('topLeftCell', 'A1'); sv.attrib.pop('tabSelected', None)
@@ -204,7 +214,7 @@ def render_inf(plan, rev, gen_date, template, out_path, alasan_kiln='Kebutuhan R
                 ks.slot(r0, tpl, v)
             else:
                 ks.slot(r0, 154 if k == 19 else 140, {})
-    ks.finish(); ks.set_breaks([52 * i for i in range(1, npg)])
+    ks.finish(date_txt); ks.set_breaks([52 * i for i in range(1, npg)])
     head_date(ks.root, 'P3')
     ks.tree.write(O('sheet2.xml'), xml_declaration=True, encoding='UTF-8', standalone=True)
     _drawing_fix(os.path.join(OUTDIR, 'xl/drawings/drawing2.xml'), npg, npg, clone_from=2)
@@ -237,7 +247,7 @@ def render_inf(plan, rev, gen_date, template, out_path, alasan_kiln='Kebutuhan R
                     qs.add_merge(f'J{r0}:O{r0 + 1}')
             else:
                 qs.slot(r0, 180 if k == 16 else 170, {})
-    qs.finish(); qs.set_breaks([page_end[i - 1] for i in range(1, nq)])
+    qs.finish(date_txt); qs.set_breaks([page_end[i - 1] for i in range(1, nq)])
     head_date(qs.root, 'P3')
     qs.tree.write(O('sheet1.xml'), xml_declaration=True, encoding='UTF-8', standalone=True)
     _drawing_fix(os.path.join(OUTDIR, 'xl/drawings/drawing1.xml'), nq, nq)
@@ -264,7 +274,7 @@ def render_inf(plan, rev, gen_date, template, out_path, alasan_kiln='Kebutuhan R
         return n
     nk = regu_rows(kiln, 12); nqc = regu_rows(qc, 69)
     info['regu'] = (nk, nqc)
-    head_date(root, 'O3')
+    head_date(root, 'O3'); fix_cached(root, date_txt)
     sv = root.find(q('sheetViews'))[0]; sv.set('topLeftCell', 'A1'); sv.attrib.pop('tabSelected', None)
     for sel in sv.findall(q('selection')): sel.set('activeCell', 'A1'); sel.set('sqref', 'A1')
     rt.write(O('sheet4.xml'), xml_declaration=True, encoding='UTF-8', standalone=True)

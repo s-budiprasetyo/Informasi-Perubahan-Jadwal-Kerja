@@ -7,6 +7,13 @@ streamlit run app.py
 ```
 Data tersimpan di `data/jadwal.db` (SQLite). Satu pengguna, tanpa login.
 
+## Departemen
+Pilih di sidebar. Tiap departemen punya riwayat, saldo, dan file hasil sendiri.
+- **SK (Shuttle Kiln)**: satu file berisi seksi KAMA (foreman Sulton/Fajar) dan QC SK (foreman Satrio) → sheet SATRIO, SULTON, PERUBAHAN REGU (R≥1 diberi akhiran `R1`).
+- **QC (Quality Control)**, HRD "23. QC": R0 menghasilkan sheet `OFF` / `MASUK` (perubahan serentak ≥50% orang di satu tanggal, satu sheet per tanggal), `R0` (sisa tidak teratur), dan `PERUBAHAN REGU`. R1, R2, … menghasilkan sheet `R1`/`R2` (semua perubahan dari revisi sebelumnya) dan `PERUBAHAN REGU` bila ada.
+  Susunan halaman (tim) dan batas serentak diatur di menu Pengaturan.
+- Departemen baru: tambah satu entri di `core/depts.py`.
+
 ## Alur
 1. Pilih seksi, bulan, lalu **Revisi** (otomatis dari riwayat: belum ada → R0, selain itu terakhir + 1).
 2. **R0**: unggah ① Jadwal Kerja SK dan ② HRD "25. Shuttle Kiln 1". Hasil = selisih Jadwal Kerja terhadap pola HRD.
@@ -23,10 +30,10 @@ Kurang hari = target (kolom Total Masuk Kerja file HRD, cadangan AQ8 Jadwal) −
 2. Buat spreadsheet kosong, bagikan (Editor) ke email service account.
 3. Salin `.streamlit/secrets.toml.example` ke `.streamlit/secrets.toml`, isi `backup_sheet_id` dan kunci.
 4. Backup otomatis setiap Simpan. Bila database lokal kosong, aplikasi memulihkan otomatis dari Sheets.
-Lembar `saldo_hari` dan `riwayat` terbaca manusia; `data_backup` untuk pemulihan.
+Lembar per departemen: `saldo_hari_SK`/`_QC` dan `riwayat_SK`/`_QC` (terbaca manusia), `data_backup_SK`/`_QC` (untuk pemulihan).
 
 ## Tes
 `python -m pytest tests` (tes memakai file contoh di folder attachments; sesuaikan path bila perlu).
 
 ## Belum ada
-Unggahan SK26 (kolom ② pada R≥1), departemen Quality Control (butuh contoh "24. QC 1"), teks regu untuk PWS 4G01xx.
+Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.

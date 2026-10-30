@@ -10,27 +10,61 @@ def _wb(f):
     return openpyxl.load_workbook(f, data_only=False)
 
 
+def _find_header(ws):
+    """Cari baris header (berisi 'Nama' & 'PRN SAP') -> (row, {label: col})."""
+    for r in range(1, 15):
+        labels = {}
+        for c in range(1, 60):
+            v = ws.cell(r, c).value
+            if isinstance(v, str): labels.setdefault(v.strip().upper(), c)
+        if 'NAMA' in labels and any(k.startswith('PRN') for k in labels):
+            return r, labels
+    raise ValueError('Baris header (Nama / PRN SAP) tidak ditemukan di Jadwal Kerja.')
+
+
+def _target(ws):
+    for r in range(1, 12):
+        for c in range(1, 12):
+            if str(ws.cell(r, c).value or '').strip().upper().startswith('HARI KERJA'):
+                t = ws.cell(r, c + 1).value
+                m = re.match(r'\s*(\d+)', str(t or ''))
+                if m: return int(m.group(1))
+    return 22
+
+
 def parse_jadwal(f):
-    """-> dict(ym, target, people=[dict(no,nama,nik,item,seksi,pws,days[31])])"""
+    """-> dict(ym, target, people=[dict(no,nama,nik,item,seksi,pws,days)]).
+    Kolom dicari dari baris header sehingga tata letak SK dan QC sama-sama terbaca."""
     wb = _wb(f)
-    ws = next((s for s in wb if 'JADWAL KERJA' in str(s['A3'].value or '').upper()), wb.active)
-    ym = parse_month_text(ws['A3'].value)
+    ws = next((s for s in wb if any('JADWAL KERJA' in str(s.cell(r, c).value or '').upper()
+                                      for r in (1, 2, 3) for c in (1, 2))), wb.active)
+    ym = None
+    for r in (1, 2, 3, 4):
+        for c in (1, 2):
+            ym = ym or parse_month_text(ws.cell(r, c).value)
     if ym is None:
-        raise ValueError('Bulan tidak terbaca dari sel A3 ("JADWAL KERJA KARYAWAN BULAN ...").')
+        raise ValueError('Bulan tidak terbaca ("JADWAL KERJA KARYAWAN BULAN ...").')
     nd = month_len(ym)
-    target = ws['AQ8'].value if isinstance(ws['AQ8'].value, (int, float)) else 22
-    rev_txt = str(ws['A7'].value or '')
+    hr, L = _find_header(ws)
+    col = lambda *names: next((L[n] for n in names if n in L), None)
+    c_no = col('NO.', 'NO'); c_nama = col('NAMA'); c_nik = next(v for k, v in L.items() if k.startswith('PRN'))
+    c_item = col('ITEM KERJA'); c_seksi = col('SEKSI'); c_pws = col('PWS')
+    c_day = next((c for c in range(1, 60) if ws.cell(hr + 1, c).value == 1), 8)
+    target = _target(ws)
     people = []
-    for row in range(10, ws.max_row + 1):
-        nama = ws.cell(row, 2).value
-        nik = str(ws.cell(row, 3).value or '').strip()
+    for row in range(hr + 2, ws.max_row + 1):
+        nama = ws.cell(row, c_nama).value
+        if str(nama or '').strip().upper().startswith('KETERANGAN'):
+            break
+        nik = str(ws.cell(row, c_nik).value or '').strip()
         if not nama or not nik.isdigit():
             continue
-        days = [norm(ws.cell(row, c).value) for c in range(8, 8 + nd)]
-        people.append(dict(no=ws.cell(row, 1).value, nama=str(nama).strip(), nik=str(ws.cell(row, 3).value).strip(),
-                           item=ws.cell(row, 4).value, seksi=str(ws.cell(row, 5).value or '').strip().upper(),
-                           pws=str(ws.cell(row, 7).value or '').strip(), days=days))
-    return dict(ym=ym, target=target, rev_text=rev_txt, people=people)
+        days = [norm(ws.cell(row, c).value) for c in range(c_day, c_day + nd)]
+        people.append(dict(no=ws.cell(row, c_no).value if c_no else None, nama=str(nama).strip(), nik=nik,
+                           item=ws.cell(row, c_item).value if c_item else None,
+                           seksi=str(ws.cell(row, c_seksi).value or '').strip().upper() if c_seksi else '',
+                           pws=str(ws.cell(row, c_pws).value or '').strip(), days=days))
+    return dict(ym=ym, target=target, people=people)
 
 
 def parse_hrd(f):
