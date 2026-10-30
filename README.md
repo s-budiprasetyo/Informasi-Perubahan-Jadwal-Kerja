@@ -1,2 +1,32 @@
-# Informasi-Perubahan-Jadwal-Kerja
-QC TK DAN SK
+# Jadwal Kerja SK - Informasi Perubahan Jadwal Jam Kerja
+
+## Menjalankan
+```
+pip install -r requirements.txt
+streamlit run app.py
+```
+Data tersimpan di `data/jadwal.db` (SQLite). Satu pengguna, tanpa login.
+
+## Alur
+1. Pilih seksi, bulan, lalu **Revisi** (otomatis dari riwayat: belum ada → R0, selain itu terakhir + 1).
+2. **R0**: unggah ① Jadwal Kerja SK dan ② HRD "25. Shuttle Kiln 1". Hasil = selisih Jadwal Kerja terhadap pola HRD.
+3. **R1, R2, …**: cukup unggah ① Jadwal Kerja SK terbaru. Hasil = selisih terhadap revisi sebelumnya (R0→R1, R1→R2), bukan terhadap HRD.
+4. 🔔 berisi catatan (PWS tidak cocok pola, orang ada di HRD tapi tak ada di Jadwal, kode jam tak dikenal, dll.). Nilai bawaan sudah terpilih, keputusan tersimpan per bulan.
+5. Tanggal efektif perubahan regu dapat diubah di pratinjau. Tombol **Simpan & buat Excel** menyimpan revisi, saldo hari, dan membuat file.
+6. File keluaran hanya berisi form perubahan; R≥1 memberi akhiran nama sheet (`SULTON R1`). Tanggal header = tanggal dibuat.
+
+## Saldo kurang/lebih hari
+Kurang hari = target (kolom Total Masuk Kerja file HRD, cadangan AQ8 Jadwal) − hari kerja di Jadwal. Saldo akhir = saldo awal (bulan lalu) + kurang. Contoh: Okt kurang 4, Nov lebih 1 → sisa 3. Koreksi saldo awal manual ada di menu Saldo Hari.
+
+## Backup Google Sheets (opsional)
+1. Google Cloud → buat Service Account, unduh kunci JSON; aktifkan Google Sheets API.
+2. Buat spreadsheet kosong, bagikan (Editor) ke email service account.
+3. Salin `.streamlit/secrets.toml.example` ke `.streamlit/secrets.toml`, isi `backup_sheet_id` dan kunci.
+4. Backup otomatis setiap Simpan. Bila database lokal kosong, aplikasi memulihkan otomatis dari Sheets.
+Lembar `saldo_hari` dan `riwayat` terbaca manusia; `data_backup` untuk pemulihan.
+
+## Tes
+`python -m pytest tests` (tes memakai file contoh di folder attachments; sesuaikan path bila perlu).
+
+## Belum ada
+Unggahan SK26 (kolom ② pada R≥1), departemen Quality Control (butuh contoh "24. QC 1"), teks regu untuk PWS 4G01xx.

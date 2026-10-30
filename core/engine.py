@@ -1,0 +1,173 @@
+"""Mesin perbandingan jadwal.
+
+R0  : Jadwal Kerja  vs  pola PWS dari HRD
+R>=1: Jadwal Kerja  vs  snapshot revisi sebelumnya
+"""
+from collections import defaultdict
+from .consts import ORDER, DAY_PWS, HOURS, month_len
+
+
+def patterns(hrd_rows):
+    pat = {}
+    for r in hrd_rows.values():
+        pat.setdefault(r['pws'], r['days'])
+    if '05D004' in pat:
+        pat.setdefault('05D035', pat['05D004'])
+    return pat
+
+
+def diffs(base, act):
+    d = defaultdict(list)
+    for i, (a, b) in enumerate(zip(base, act)):
+        if a != b:
+            d[(a, b)].append(i + 1)
+    return d
+
+
+def order_entries(d):
+    d = dict(d)
+    ents = []
+    for k in ORDER:
+        if k in d:
+            ents.append([k[0], k[1], d.pop(k)])
+    for k in sorted(d):
+        ents.append([k[0], k[1], d.pop(k)])
+    return ents
+
+
+def effective_date(act, newp):
+    """Tanggal efektif perubahan regu: hari pertama memakai kode regu baru;
+    1 bila sudah bekerja sesuai regu baru sejak awal / tidak ada hari kerja lain sebelumnya."""
+    newc = {x for x in newp if x != 'OFF'}
+    F = next((i for i in range(len(act)) if act[i] != 'OFF' and act[i] in newc), None)
+    if F is not None and any(act[i] != 'OFF' for i in range(F)):
+        return F + 1
+    return 1
+
+
+def blend_base(old, new, act, pat):
+    """(baseline, regu_dict|None) untuk perbandingan R0."""
+    exempt = old == '05D035'
+    if exempt: old = '05D004'
+    newp, oldp = pat[new], pat[old]
+    if exempt: return pat['05D004'], None, True
+    if old == new: return newp, None, False
+    E = effective_date(act, newp)
+    return oldp[:E - 1] + newp[E - 1:], dict(lama=old, baru=new, tgl=E), False
+
+
+def _same_pws(a, b):
+    n = lambda x: 'DAY' if x in ('05D004', '05D035') else x
+    return n(a) == n(b)
+
+
+def detect(jad, hrd_rows, prev=None):
+    """Daftar anomali (independen dari keputusan pengguna) untuk panel lonceng."""
+    nd = month_len(jad['ym'])
+    pat = patterns(hrd_rows) if hrd_rows else {}
+    out = []
+    niks = {p['nik'] for p in jad['people']}
+    prev_by = {p['nik']: p for p in prev['people']} if prev else {}
+    for p in jad['people']:
+        nik = p['nik']
+        s = hrd_rows.get(nik) if hrd_rows else None
+        if nik not in prev_by and not s:
+            out.append(dict(kind='no_baseline', nik=nik, nama=p['nama'],
+                            msg='Tidak ada di file HRD maupun revisi sebelumnya - tidak ada pembanding, dilewati.'))
+            continue
+        if prev:
+            if nik not in prev_by:
+                out.append(dict(kind='new_person', nik=nik, nama=p['nama'],
+                                msg='Orang baru di revisi ini; pembanding = pola HRD.'))
+            elif not _same_pws(prev_by[nik]['pws'], p['pws']):
+                out.append(dict(kind='pws_changed', nik=nik, nama=p['nama'],
+                                msg=f"PWS berubah {prev_by[nik]['pws']} -> {p['pws']} (masuk form Perubahan Regu)."))
+            continue
+        if p['pws'] not in pat:
+            out.append(dict(kind='unknown_pws', nik=nik, nama=p['nama'],
+                            msg=f"PWS {p['pws']} tidak punya pola di file HRD - dilewati."))
+            continue
+        hp = s['pws'] if s and s['pws'] in pat else p['pws']
+        act = p['days'][:nd]
+        E0 = effective_date(act, pat[p['pws']]) if p['pws'] in pat else 1
+        worked = [c for c in act[E0 - 1:] if c != 'OFF']
+        codes = lambda w: {x for x in pat[w] if x != 'OFF'}
+        known = codes(p['pws']) if p['pws'] in pat else set(worked)
+        bad = sum(1 for c in worked if c not in known)
+        if worked and bad >= len(worked) * 0.4:
+            alt = s['pws'] if s and s['pws'] in pat else None
+            altbad = sum(1 for c in worked if c not in codes(alt)) if alt else 99
+            sug = alt if alt and altbad < bad else p['pws']
+            out.append(dict(kind='pws_mismatch', nik=nik, nama=p['nama'], declared=p['pws'], suggest=sug,
+                            options=sorted({p['pws'], sug}),
+                            msg=f"Kode PWS di Jadwal ({p['pws']}) tidak cocok dengan pola harinya "
+                                f"({bad} dari {len(worked)} hari kerja memakai kode di luar pola PWS). Disarankan: {sug}."))
+    for p in jad['people']:
+        for c in set(p['days']):
+            if c != 'OFF' and c not in HOURS:
+                out.append(dict(kind='unknown_code', nik=p['nik'], nama=p['nama'],
+                                msg=f'Kode jam kerja {c} belum punya teks jam - kolom jam dikosongkan.'))
+                break
+    if hrd_rows and not prev:
+        for nik, s in hrd_rows.items():
+            if nik not in niks:
+                out.append(dict(kind='hrd_only', nik=nik, nama=s['nama'], pws=s['pws'],
+                                options=['abaikan', 'SK', 'QCSK'],
+                                msg=f"Ada di HRD (PWS {s['pws']}) tetapi tidak ada di Jadwal Kerja."))
+    if prev:
+        for nik, q in prev_by.items():
+            if nik not in niks:
+                out.append(dict(kind='removed', nik=nik, nama=q['nama'],
+                                msg='Ada di revisi sebelumnya tetapi tidak ada di file baru.'))
+    return out
+
+
+def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None):
+    """-> (plan, snapshot).  decisions: {nik: value}; tgl_over: {nik: int}"""
+    decisions = decisions or {}
+    tgl_over = tgl_over or {}
+    ym = jad['ym']; nd = month_len(ym)
+    pat = patterns(hrd_rows) if hrd_rows else {}
+    prev_by = {p['nik']: p for p in prev['people']} if prev else {}
+    people_in = list(jad['people'])
+    niks = {p['nik'] for p in people_in}
+    # HRD-only yang diputuskan dimasukkan
+    if hrd_rows and not prev:
+        for nik, s in hrd_rows.items():
+            d = decisions.get(nik)
+            if nik not in niks and d in ('SK', 'QCSK'):
+                people_in.append(dict(no=None, nama=s['nama'], nik=nik, item=None, seksi=d, pws=s['pws'],
+                                      days=list(s['days'][:nd])))
+    plan_people, snap_people, skipped = [], [], []
+    for j in people_in:
+        nik = j['nik']; act = j['days'][:nd]
+        s = hrd_rows.get(nik) if hrd_rows else None
+        new = decisions.get(nik) if decisions.get(nik) in pat else j['pws']
+        regu = None; exempt = False
+        if prev and nik in prev_by:
+            q = prev_by[nik]
+            base = q['days'][:nd]; old = q['pws']
+            exempt = q.get('exempt', False)
+            if not _same_pws(old, new) and new in pat:
+                regu = dict(lama=old, baru=new, tgl=effective_date(act, pat[new]))
+        else:
+            if not s:
+                skipped.append(nik); continue
+            old = s['pws']
+            if old == '05D035': old = '05D004'
+            if new not in pat or old not in pat:
+                skipped.append(nik); continue
+            base, regu, exempt = blend_base(s['pws'], new, act, pat)
+        if regu and nik in tgl_over:
+            regu['tgl'] = int(tgl_over[nik])
+        ents = order_entries(diffs(base, act))
+        nama_hrd = s['nama'] if s else (prev_by[nik]['nama_hrd'] if nik in prev_by else j['nama'])
+        plan_people.append(dict(nik=nik, nama=j['nama'], nama_hrd=nama_hrd, seksi=j['seksi'], pws=new,
+                                pws_lama=old, ents=ents, regu=regu, exempt=exempt))
+        target = (s or {}).get('total') or jad.get('target') or 22
+        worked = sum(1 for x in act if x != 'OFF')
+        snap_people.append(dict(nik=nik, nama=j['nama'], nama_hrd=nama_hrd, seksi=j['seksi'], pws=new,
+                                days=act, exempt=exempt, target=target, worked=worked, kurang=target - worked))
+    plan = dict(ym=ym, people=plan_people, skipped=skipped)
+    snap = dict(ym=ym, people=snap_people)
+    return plan, snap
