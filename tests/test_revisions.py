@@ -113,3 +113,30 @@ def test_store_revs_and_backup(tmp_path):
     assert st.revs('SK', '2026-10') == [0]
     data = st.export_all(); st2 = Store(':memory:'); st2.import_all(data)
     assert st2.get_rev('SK', '2026-10', 0)['plan']['ym'] == '2026-10'
+
+
+def test_delete_from_recomputes_ledger(tmp_path):
+    st = Store(str(tmp_path / 'd.db'))
+    plan0, snap0 = engine.compute(jad, hrd['rows'], None, {'409': '2G0301'})
+    st.save_rev('SK', '2026-10', 0, plan0, snap0, 'HRD', 'j.xlsx', 'h.xlsx')
+    st.save_ledger('SK', '2026-10', snap0)
+    st.set_setting('SK', 'holidays:2026-10', [17])
+    plan1, snap1 = engine.compute(jad, hrd['rows'], snap0, {'409': '2G0301'})
+    st.save_rev('SK', '2026-10', 1, plan1, snap1, 'R0', 'j.xlsx', '')
+    st.delete_from('SK', '2026-10', 1)
+    assert st.revs('SK', '2026-10') == [0]
+    st.delete_from('SK', '2026-10', 0)
+    assert st.revs('SK', '2026-10') == [] and not st.ledger_months('SK')
+    assert st.get_setting('SK', 'holidays:2026-10', None) is None
+
+
+def test_holiday_suppresses_change():
+    d0 = {'409': '2G0301'}
+    p0, _ = engine.compute(jad, hrd['rows'], None, d0)
+    cand = [(p['nik'], x) for p in p0['people'] for a, b, ds in p['ents'] if b == 'OFF' for x in ds]
+    assert cand
+    nik, day = cand[0]
+    p1, s1 = engine.compute(jad, hrd['rows'], None, d0, None, None, [day])
+    q = next(p for p in p1['people'] if p['nik'] == nik)
+    assert all(day not in ds for a, b, ds in q['ents'])
+    assert p1['holidays'] == [day]

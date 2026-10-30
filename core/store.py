@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS hrd(dept TEXT, ym TEXT, data TEXT, PRIMARY KEY(dept,y
 CREATE TABLE IF NOT EXISTS decisions(dept TEXT, ym TEXT, nik TEXT, value TEXT, PRIMARY KEY(dept,ym,nik));
 CREATE TABLE IF NOT EXISTS ledger(dept TEXT, ym TEXT, nik TEXT, nama TEXT, target REAL, worked REAL, kurang REAL,
   saldo_awal REAL, saldo_akhir REAL, PRIMARY KEY(dept,ym,nik));
+CREATE TABLE IF NOT EXISTS files(dept TEXT, ym TEXT, rev INTEGER, name TEXT, blob BLOB, PRIMARY KEY(dept,ym,rev));
 CREATE TABLE IF NOT EXISTS settings(dept TEXT, key TEXT, value TEXT, PRIMARY KEY(dept,key));
 CREATE TABLE IF NOT EXISTS opening(dept TEXT, ym TEXT, nik TEXT, saldo REAL, PRIMARY KEY(dept,ym,nik));
 """
@@ -44,6 +45,21 @@ class Store:
                             (dept, ym, rev, datetime.datetime.now().isoformat(timespec='seconds'), basis,
                              json.dumps(plan), json.dumps(snapshot), jadwal_file, hrd_file))
             self.db.commit()
+
+    def delete_from(self, dept, ym, rev):
+        """Hapus revisi `rev` dan semua sesudahnya. Saldo hari bulan itu dihitung ulang dari revisi terakhir yang tersisa."""
+        with self.lock:
+            self.db.execute('DELETE FROM revisions WHERE dept=? AND ym=? AND rev>=?', (dept, ym, rev))
+            self.db.execute('DELETE FROM files WHERE dept=? AND ym=? AND rev>=?', (dept, ym, rev))
+            self.db.commit()
+        left = self.revs(dept, ym)
+        if left: self.save_ledger(dept, ym, self.get_rev(dept, ym, left[-1])['snapshot'])
+        else:
+            with self.lock:
+                for t in ('ledger', 'hrd', 'decisions', 'opening'):
+                    self.db.execute(f'DELETE FROM {t} WHERE dept=? AND ym=?', (dept, ym))
+                self.db.execute('DELETE FROM settings WHERE dept=? AND key=?', (dept, f'holidays:{ym}'))
+                self.db.commit()
 
     def list_revs(self, dept=None):
         q = 'SELECT dept,ym,rev,created,basis,jadwal_file,hrd_file FROM revisions' + (' WHERE dept=?' if dept else '') + ' ORDER BY ym DESC,dept,rev DESC'
@@ -115,6 +131,14 @@ class Store:
                     self.db.execute(f'INSERT OR REPLACE INTO {t}({",".join(cols)}) VALUES({",".join("?" * len(cols))})',
                                     [row[c] for c in cols])
             self.db.commit()
+
+    # ---- berkas Jadwal Kerja yang diunggah (lokal saja; terlalu besar untuk backup Sheets)
+    def save_file(self, dept, ym, rev, name, blob):
+        self.db.execute('INSERT OR REPLACE INTO files VALUES(?,?,?,?,?)', (dept, ym, rev, name, blob)); self.db.commit()
+
+    def get_file(self, dept, ym, rev):
+        r = self.db.execute('SELECT name, blob FROM files WHERE dept=? AND ym=? AND rev=?', (dept, ym, rev)).fetchone()
+        return (r[0], bytes(r[1])) if r else None
 
     # ---- pengaturan per departemen (mis. susunan tim QC)
     def set_setting(self, dept, key, value):

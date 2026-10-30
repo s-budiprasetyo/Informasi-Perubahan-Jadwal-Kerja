@@ -4,7 +4,7 @@ import os, io, tempfile, datetime
 import pandas as pd
 import streamlit as st
 
-from core.consts import BULAN_ID, ym_label, prev_ym, sheet_suffix
+from core.consts import BULAN_ID, BULAN_ABBR, ym_label, prev_ym, sheet_suffix, month_len
 from core.parsers import parse_jadwal, parse_hrd
 from core import engine, backup
 from core.inf_writer import render_inf
@@ -12,6 +12,7 @@ from core.store import Store
 from core.depts import DEPTS
 from core import qc_layout
 from core.render import render
+from core.jadwal_out import make_jadwal
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, 'assets', 'template_inf.xlsx')
@@ -88,6 +89,11 @@ def render_bytes(dept, plan, rev, gen_date):
         return open(p, 'rb').read(), info
 
 
+def jadwal_name(dept, ym, rev):
+    y, m = map(int, ym.split('-'))
+    return f'JADWAL_KERJA_{dept}_{BULAN_ID[m - 1].upper()}_{y}{"" if rev == 0 else f"_R{rev}"}.xlsx'
+
+
 def file_name(dept, ym, rev):
     y, m = map(int, ym.split('-'))
     return f'{DEPTS[dept]["filename"]}_{BULAN_ID[m - 1].upper()}_{y}{"" if rev == 0 else f"_R{rev}"}.xlsx'
@@ -107,6 +113,74 @@ def plan_tables(plan):
             rg.append({'NIK': p['nik'], 'Nama': p['nama_hrd'], 'Seksi': p['seksi'], 'Dari': p['regu']['lama'],
                        'Ke': p['regu']['baru'], 'Tgl efektif': p['regu']['tgl']})
     return pd.DataFrame(ch), pd.DataFrame(rg)
+
+
+XL = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
+def do_save():
+    """Dipanggil saat pengguna memilih 'Simpan ke riwayat & unduh'. Satu-satunya tempat data masuk riwayat."""
+    o = st.session_state['out']
+    store.save_rev(o['dept'], o['ym'], o['rev'], o['plan'], o['snap'], o['basis'], o['jname'], o['hname'])
+    if o['hrd_rows'] is not None: store.save_hrd(o['dept'], o['ym'], o['hrd_rows'])
+    store.save_decisions(o['dept'], o['ym'], o['decisions'])
+    if o['rev'] == 0: store.set_setting(o['dept'], f"holidays:{o['ym']}", o['holidays'])
+    store.save_ledger(o['dept'], o['ym'], o['snap'])
+    store.save_file(o['dept'], o['ym'], o['rev'], o['jname'], o['jbytes'])
+    o['saved'] = True
+    if backup.configured(secrets_obj()):
+        try: backup.push(store, secrets_obj(), list(DEPTS)); st.session_state['bk'] = 'Backup Google Sheets berhasil.'
+        except Exception as e: st.session_state['bk'] = f'Backup Google Sheets gagal: {e}'
+
+
+def preview_sheets(data):
+    """Baca Excel hasil render -> {nama sheet: DataFrame} untuk ditinjau."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data)); out = {}
+    for ws in wb:
+        rows = []
+        for r in range(12, ws.max_row + 1):
+            if not isinstance(ws.cell(r, 1).value, int): continue
+            v = lambda c, k=0: ws.cell(r + k, c).value
+            if 'REGU' in ws.title.upper():
+                rows.append({'No': v(1), 'NIK': v(2), 'Nama': v(3), 'Seksi': v(9), 'Dari': f"{v(10)} {v(10, 1) or ''}".strip(),
+                             'Ke': f"{v(12)} {v(12, 1) or ''}".strip(), 'Tanggal': f"{v(14)} {v(14, 1) or ''}".strip()})
+            else:
+                rows.append({'No': v(1), 'NIK': v(2), 'Nama': v(4), 'Tgl perubahan': ' '.join(str(x) for x in (v(10), v(10, 1)) if x).replace('\n', ' '),
+                             'Lama': f"{v(16)} {v(16, 1) or ''}".strip(), 'Baru': f"{v(19)} {v(19, 1) or ''}".strip()})
+        out[ws.title] = pd.DataFrame(rows)
+    return out
+
+
+@st.dialog('Tinjau hasil sebelum diunduh', width='large')
+def review(kind):
+    o = st.session_state['out']; name, data = o[kind]
+    st.markdown(f"**{name}**  \n{DEPTS[o['dept']]['label']} · {ym_label(o['ym'])} · **R{o['rev']}** · dibandingkan dengan {o['basis']}")
+    if kind == 'inf':
+        pv = preview_sheets(data)
+        tabs = st.tabs([f"{k} ({len(v)})" for k, v in pv.items()])
+        for t, (k, v) in zip(tabs, pv.items()):
+            if len(v): t.dataframe(v, use_container_width=True, hide_index=True, height=320)
+            else: t.info('Sheet kosong.')
+    else:
+        st.caption(f"Salinan Jadwal Kerja yang Anda unggah, dengan 'Revisi : {o['rev']}' dan tanggal hari ini.")
+        st.dataframe(pd.DataFrame([{'NIK': p['nik'], 'Nama': p['nama'], 'Target': p['target'], 'Hari kerja': p['worked'],
+                                    'Kurang hari': p['kurang']} for p in o['snap']['people']]), use_container_width=True, hide_index=True, height=320)
+    if o['saved']:
+        st.success('Revisi ini sudah tersimpan di riwayat.')
+        st.download_button('⬇️ Unduh', data, name, XL, on_click='ignore', type='primary', use_container_width=True)
+        return
+    ex = store.get_rev(o['dept'], o['ym'], o['rev'])
+    if ex:
+        after = [r for r in store.revs(o['dept'], o['ym']) if r > o['rev']]
+        st.warning(f"⚠️ R{o['rev']} bulan ini sudah ada (disimpan {ex['created']}). Menyimpan akan **menimpanya**"
+                   + (f" dan **menghapus** revisi sesudahnya: {', '.join('R%d' % r for r in after)}." if after else '.')
+                   + ' Pilih "Unduh saja" bila revisi ini belum final.')
+    else:
+        st.info('Belum disimpan di riwayat. Pilih salah satu; file langsung terunduh.')
+    c1, c2 = st.columns(2)
+    c1.download_button('💾 Simpan ke riwayat & unduh', data, name, XL, on_click=do_save, type='primary', use_container_width=True)
+    c2.download_button('Unduh saja (tidak disimpan)', data, name, XL, on_click='ignore', use_container_width=True)
 
 
 dept = st.sidebar.selectbox('Departemen', list(DEPTS), format_func=lambda k: f"{k} - {DEPTS[k]['label']}", key='dept_sel')
@@ -162,9 +236,19 @@ if page == 'Buat Jadwal':
             st.error(f'Revisi R{rev - 1} belum tersimpan, jadi R{rev} tidak punya pembanding.'); st.stop()
         prev = r['snapshot']
 
+    nd = month_len(ym)
+    if rev == 0:
+        holidays = st.multiselect('Hari nasional bulan ini (jadwal libur serentak - tidak dibuatkan perubahan)', list(range(1, nd + 1)),
+                                  default=store.get_setting(dept, f'holidays:{ym}', []), key=f'hol_{dept}_{ym}',
+                                  format_func=lambda d: f'{d} {BULAN_ABBR[int(ym[5:]) - 1]}',
+                                  help='Hari nasional tidak terbaca dari file HRD. Pilih tanggalnya; libur di Jadwal pada tanggal itu tidak jadi perubahan, '
+                                       'dan target hari kerja orang yang dasarnya masuk di tanggal itu berkurang 1.')
+    else:
+        holidays = prev.get('holidays') if False else (store.get_rev(dept, ym, rev - 1)['plan'].get('holidays') or [])
+        if holidays: st.caption('Hari nasional bulan ini (dari R0): ' + ', '.join(map(str, holidays)))
     anoms = engine.detect(jad, hrd_rows, prev, cfg)
     saved = store.get_decisions(dept, ym)
-    ACT = ('pws_mismatch', 'hrd_only', 'jadwal_only')
+    ACT = ('pws_mismatch', 'hrd_only', 'jadwal_only', 'late_start')
     n_act = sum(1 for a in anoms if a['kind'] in ACT)
     top = st.columns([6, 1])
     with top[1].popover(f'🔔 {len(anoms)}', use_container_width=True):
@@ -175,26 +259,32 @@ if page == 'Buat Jadwal':
                 d = saved.get(a['nik'], a['suggest']); opts = a['options']
                 st.selectbox('Pakai PWS', opts, index=opts.index(d) if d in opts else 0, key=f"dec_{a['nik']}")
             elif a['kind'] == 'jadwal_only':
-                d = saved.get(a['nik'], '(pilih)'); opts = a['options']
+                d = saved.get(a['nik'], a['default']); opts = a['options']
                 st.selectbox('PWS lama (dasar)', opts, index=opts.index(d) if d in opts else 0, key=f"dec_{a['nik']}")
+            elif a['kind'] == 'late_start':
+                d = saved.get('start:' + a['nik'], a['default'])
+                st.selectbox(f"Karyawan baru mulai tgl {a['start']}?", a['options'], index=a['options'].index(d) if d in a['options'] else 0,
+                             key=f"dec_start_{a['nik']}")
             elif a['kind'] == 'hrd_only':
                 d = saved.get(a['nik'], 'abaikan')
                 st.selectbox('Keputusan', a['options'], index=a['options'].index(d) if d in a['options'] else 0,
                              key=f"dec_{a['nik']}", help='Masukkan ke jadwal (jadwal = jadwal HRD) atau abaikan.')
             st.divider()
-    if n_act: top[0].warning(f'{n_act} catatan menunggu keputusan Anda (🔔).')
+    if n_act: top[0].info(f'{n_act} catatan di 🔔 sudah terisi nilai bawaan; periksa bila perlu.')
     decisions = {k: v for k, v in saved.items()}
     for a in anoms:
-        if a['kind'] in ACT:
-            decisions[a['nik']] = st.session_state.get(f"dec_{a['nik']}", saved.get(a['nik'], a.get('suggest', '(pilih)' if a['kind'] == 'jadwal_only' else 'abaikan')))
-    plan0, _ = engine.compute(jad, hrd_rows, prev, decisions, None, cfg)
+        if a['kind'] == 'late_start':
+            decisions['start:' + a['nik']] = st.session_state.get(f"dec_start_{a['nik']}", saved.get('start:' + a['nik'], a['default']))
+        elif a['kind'] in ACT:
+            decisions[a['nik']] = st.session_state.get(f"dec_{a['nik']}", saved.get(a['nik'], a.get('suggest', a.get('default', 'abaikan'))))
+    plan0, _ = engine.compute(jad, hrd_rows, prev, decisions, None, cfg, holidays)
     tgl = {}
     with st.expander('Tanggal efektif perubahan regu (bisa diubah)', expanded=0 < sum(1 for p in plan0['people'] if p['regu']) <= 6):
         for p in plan0['people']:
             if p['regu']:
                 tgl[p['nik']] = st.number_input(f"{p['nama_hrd']}  {p['regu']['lama']} → {p['regu']['baru']}", 1, 31,
                                                 p['regu']['tgl'], key=f"tgl_{dept}_{ym}_{rev}_{p['nik']}")
-    plan, snap = engine.compute(jad, hrd_rows, prev, decisions, tgl, cfg)
+    plan, snap = engine.compute(jad, hrd_rows, prev, decisions, tgl, cfg, holidays)
 
     basis = 'HRD (jadwal dasar)' if prev is None else f'revisi sebelumnya R{rev - 1}'
     st.subheader(f'Pratinjau R{rev}  -  dibandingkan dengan {basis}')
@@ -213,30 +303,30 @@ if page == 'Buat Jadwal':
         else:
             st.info(f'Sheet yang akan dibuat → R{rev} (semua perubahan dari R{rev - 1}) | PERUBAHAN REGU (bila ada)')
     t1, t2, t3 = st.tabs(['Perubahan jadwal', 'Perubahan regu', 'Kurang hari (kolom AN)'])
-    t1.dataframe(ch, use_container_width=True, hide_index=True) if len(ch) else t1.info('Tidak ada perubahan jadwal.')
-    t2.dataframe(rg, use_container_width=True, hide_index=True) if len(rg) else t2.info('Tidak ada perubahan regu.')
+    if len(ch): t1.dataframe(ch, use_container_width=True, hide_index=True)
+    else: t1.info('Tidak ada perubahan jadwal.')
+    if len(rg): t2.dataframe(rg, use_container_width=True, hide_index=True)
+    else: t2.info('Tidak ada perubahan regu.')
     led = pd.DataFrame([{'NIK': p['nik'], 'Nama': p['nama'], 'Target': p['target'], 'Hari kerja': p['worked'],
                          'Kurang hari': p['kurang'], 'Saldo awal': store.opening(dept, ym, p['nik'])} for p in snap['people']])
     led['Saldo akhir'] = led['Saldo awal'] + led['Kurang hari']
     t3.dataframe(led, use_container_width=True, hide_index=True)
     t3.caption('Kurang hari = target (file HRD) - hari kerja di Jadwal. Positif = masih kurang, negatif = lebih. Lebih hari bulan ini mengurangi kekurangan bulan lalu.')
 
-    if st.button(f'💾 Simpan R{rev} & buat Excel', type='primary', disabled=bool(plan.get('pending'))):
+    if st.button(f'⚙️ Generate R{rev}', type='primary', disabled=bool(plan.get('pending'))):
         gen = datetime.date.today()
         data, info = render_bytes(dept, plan, rev, gen)
-        store.save_rev(dept, ym, rev, plan, snap, basis, f_j.name, f_h.name if f_h else '')
-        if f_h: store.save_hrd(dept, ym, hrd_rows)
-        store.save_decisions(dept, ym, decisions)
-        store.save_ledger(dept, ym, snap)
-        st.session_state['out'] = (file_name(dept, ym, rev), data, info, rev)
-        if backup.configured(secrets_obj()):
-            try: backup.push(store, secrets_obj(), list(DEPTS)); st.session_state['bk'] = 'Backup Google Sheets berhasil.'
-            except Exception as e: st.session_state['bk'] = f'Backup Google Sheets gagal: {e}'
-    if 'out' in st.session_state:
-        name, data, info, r_ = st.session_state['out']
-        st.success(f'R{r_} tersimpan. Sheet: {", ".join(info["sheets"])}.  ' + st.session_state.get('bk', ''))
-        st.download_button('⬇️ Unduh ' + name, data, name,
-                           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        st.session_state['out'] = dict(
+            dept=dept, ym=ym, rev=rev, info=info, plan=plan, snap=snap, basis=basis, decisions=decisions, holidays=holidays,
+            jname=f_j.name, jbytes=f_j.getvalue(), hname=f_h.name if f_h else '', hrd_rows=hrd_rows if f_h else None,
+            inf=(file_name(dept, ym, rev), data), jad=(jadwal_name(dept, ym, rev), make_jadwal(f_j.getvalue(), rev, gen)), saved=False)
+        st.session_state.pop('bk', None)
+    o = st.session_state.get('out')
+    if o and o['dept'] == dept and o['ym'] == ym and o['rev'] == rev:
+        st.success(f"R{o['rev']} sudah dibuat (belum disimpan ke riwayat). Klik tombol unduh untuk meninjau, lalu pilih simpan atau tidak.")
+        d1, d2 = st.columns(2)
+        if d1.button('⬇️ Unduh Jadwal Kerja', use_container_width=True): review('jad')
+        if d2.button('⬇️ Unduh Informasi Perubahan Jadwal', type='primary', use_container_width=True): review('inf')
 
 # =====================================================================
 elif page == 'Riwayat':
@@ -251,11 +341,27 @@ elif page == 'Riwayat':
     rec = store.get_rev(d_, y_, r_)
     ch, rg = plan_tables(rec['plan'])
     st.write(f"Dibandingkan dengan: **{rec['basis']}**")
-    st.dataframe(ch, use_container_width=True, hide_index=True) if len(ch) else st.info('Tidak ada perubahan jadwal.')
+    if len(ch): st.dataframe(ch, use_container_width=True, hide_index=True)
+    else: st.info('Tidak ada perubahan jadwal.')
     if len(rg): st.dataframe(rg, use_container_width=True, hide_index=True)
     data, info = render_bytes(d_, rec['plan'], r_, datetime.date.today())
-    st.download_button('⬇️ Unduh ulang (tanggal header = hari ini)', data, file_name(d_, y_, r_),
-                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    c1, c2 = st.columns(2)
+    jf = store.get_file(d_, y_, r_)
+    if jf: c1.download_button('⬇️ Unduh Jadwal Kerja (tanggal header = hari ini)', make_jadwal(jf[1], r_, datetime.date.today()),
+                              jadwal_name(d_, y_, r_), XL, use_container_width=True)
+    else: c1.info('Berkas Jadwal Kerja revisi ini tidak tersimpan di database ini.')
+    c2.download_button('⬇️ Unduh Informasi Perubahan Jadwal (tanggal header = hari ini)', data, file_name(d_, y_, r_), XL,
+                       type='primary', use_container_width=True)
+    with st.expander('🗑️ Hapus revisi ini'):
+        later = [r for r in store.revs(d_, y_) if r > r_]
+        st.warning(f'Menghapus R{r_} {y_}' + (f' juga menghapus revisi sesudahnya: {", ".join("R%d" % r for r in later)}.' if later else '.')
+                   + ' Saldo kurang hari bulan itu dihitung ulang dari revisi yang tersisa.')
+        if st.checkbox('Saya yakin ingin menghapus', key=f'delok_{d_}_{y_}_{r_}') and st.button('Hapus', key=f'del_{d_}_{y_}_{r_}'):
+            store.delete_from(d_, y_, r_)
+            if backup.configured(secrets_obj()):
+                try: backup.push(store, secrets_obj(), list(DEPTS))
+                except Exception as e: st.error(f'Backup gagal: {e}')
+            st.rerun()
 
 # =====================================================================
 elif page == 'Saldo Hari':

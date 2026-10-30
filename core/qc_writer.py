@@ -6,6 +6,9 @@ from .consts import HOURS, REGU_TXT, BULAN_ID, BULAN_ABBR, ym_label
 from .inf_writer import (Sheet, q, XDR, col_of, rownum, setcell, clear_row, fix_cached, fmt_dates, hrs)
 from . import qc_layout
 
+# penulisan kode di form QC mengikuti contoh (huruf O pada DSO4 / DSO2)
+SHOW = {'DS04': 'DSO4', 'DS02': 'DSO2'}
+show = lambda c: SHOW.get(c, c)
 CAP = 19                    # baris per halaman (slot ke-20 dibiarkan kosong agar garis bawah halaman aman)
 PAGE = 52
 
@@ -81,9 +84,9 @@ def _list_sheet(W, D, pages, date_txt, BULAN, alasan):
             else:
                 v[('J', 0)] = f'{ds[0]} {BULAN}' if len(ds) == 1 else f'{ds[0]} & {ds[1]} {BULAN}'
                 v[('J', 1)] = f' ( {len(ds)} Hari )'
-            if b == 'OFF': kind = 'xo'; v.update({('P', 0): a, ('P', 1): hrs(a), ('S', 0): 'OFF'})
-            elif a == 'OFF': kind = 'ox'; v.update({('P', 0): 'OFF', ('S', 0): b, ('S', 1): hrs(b)})
-            else: kind = 'xy'; v.update({('P', 0): a, ('P', 1): hrs(a), ('S', 0): b, ('S', 1): hrs(b)})
+            if b == 'OFF': kind = 'xo'; v.update({('P', 0): show(a), ('P', 1): hrs(a), ('S', 0): 'OFF'})
+            elif a == 'OFF': kind = 'ox'; v.update({('P', 0): 'OFF', ('S', 0): show(b), ('S', 1): hrs(b)})
+            else: kind = 'xy'; v.update({('P', 0): show(a), ('P', 1): hrs(a), ('S', 0): show(b), ('S', 1): hrs(b)})
             s.filled(r0, kind, v, many)
     setcell(s.rows[3], 'P', date_txt)
     s.finish(date_txt); s.set_breaks([PAGE * i for i in range(1, n)])

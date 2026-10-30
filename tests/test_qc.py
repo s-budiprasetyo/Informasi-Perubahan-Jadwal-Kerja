@@ -22,7 +22,7 @@ def slots(ws):
 
 def test_detect_needs_decision_for_unknown_person():
     k = [a for a in engine.detect(jad, hrd['rows'], None, cfg) if a['kind'] == 'jadwal_only']
-    assert [a['nik'] for a in k] == ['962'] and '05D002' in k[0]['options']
+    assert [a['nik'] for a in k] == ['962'] and '05D002' in k[0]['options'] and k[0]['default'] == '05D002'
     plan, _ = engine.compute(jad, hrd['rows'], None, {'962': '(pilih)'}, None, cfg)
     assert plan['pending'] == ['962'] and '962' in plan['skipped']
 
@@ -40,7 +40,7 @@ def test_r0_structure(tmp_path):
     off = wb['OFF']
     assert {off.cell(r, 10).value for r in slots(off)} == {'9 Oktober 2026'}
     assert off['P3'].value == 'GRESIK, 9 Oktober 2026' and off['P8'].value == 'M. NUR MUSTHOFA'
-    assert wb['R0'].cell(12, 16).value == 'OFF' and wb['R0'].cell(12, 19).value == 'DS02'
+    assert wb['R0'].cell(12, 16).value == 'OFF' and wb['R0'].cell(12, 19).value == 'DSO2'
     reg = wb['PERUBAHAN REGU']
     assert len(slots(reg)) == 37 and reg['O3'].value == 'GRESIK, 9 Oktober 2026'
 
@@ -109,3 +109,11 @@ def test_backup_sheet_names_per_dept(tmp_path, monkeypatch):
     assert st2.revs('QC', '2026-10') == [0] and len(st2.get_ledger('QC', '2026-10')) == 48
     # pulih satu departemen tidak menghapus departemen lain
     st2.save_rev('SK', '2026-11', 0, plan, snap, 'HRD'); backup.pull(st2, {}, ['QC']); assert st2.revs('SK', '2026-11') == [0]
+
+
+def test_jadwal_output(tmp_path):
+    from core.jadwal_out import make_jadwal
+    import io
+    out = make_jadwal(open(A + '5fbf0280-JADWAL_KERJA_OKTOBER_QC.xlsx', 'rb').read(), 3, datetime.date(2026, 10, 30))
+    ws = openpyxl.load_workbook(io.BytesIO(out)).active
+    assert ws['B7'].value == 'Revisi : 3' and ws['Z2'].value == 'Gresik, 30 Oktober 2026' and ws['H10'].value == 'DSO4'

@@ -37,3 +37,15 @@ Lembar per departemen: `saldo_hari_SK`/`_QC` dan `riwayat_SK`/`_QC` (terbaca man
 
 ## Belum ada
 Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.
+
+## Alur unduh & riwayat (penting)
+1. Unggah file → atur keputusan (lonceng 🔔) → pilih **Hari nasional** (R0) → klik **Generate**. Generate **tidak menyimpan apa pun**.
+2. Muncul dua tombol: *Unduh Jadwal Kerja* dan *Unduh Informasi Perubahan Jadwal*. Klik salah satu → jendela tinjau (isi sheet bisa dilihat).
+3. Di jendela itu pilih **Simpan ke riwayat & unduh** atau **Unduh saja (tidak disimpan)**. File otomatis terunduh.
+4. Bila revisi itu sudah ada di riwayat, jendela menampilkan peringatan (akan menimpa, dan revisi sesudahnya terhapus). Pilihan tetap bebas.
+5. Hanya data yang Anda simpan yang menjadi dasar perbandingan revisi berikutnya dan saldo kurang hari bulan depan.
+6. Riwayat → *Hapus revisi ini* (saldo dihitung ulang).
+
+## Karyawan baru di tengah bulan & hari nasional
+- Karyawan yang libur dari tgl 1 sampai tgl mulai: muncul di lonceng (R0) "mulai tgl X?". Bila *ya*, hari sebelum tgl mulai tidak dibuatkan perubahan dan tanggal perubahan regu = tgl mulai (bisa diubah).
+- Hari nasional: pilih tanggalnya; libur di Jadwal pada tanggal itu tidak jadi perubahan, target hari kerja orang yang dasarnya masuk di tanggal itu berkurang 1.

@@ -13,6 +13,7 @@ DEPTS = {
         exempt_pws=(),
         regu_name='jadwal', filename='INF_PERB_JADWAL_JAM_KERJA_QC',
         hrd_hint='23. QC',
+        new_person_pws='05D002',       # karyawan baru: PWS lama (dasar) = 05D002, lalu dibuatkan perubahan regu
         bulk_pct=50,                   # >= 50% orang berubah serentak di satu tanggal -> sheet OFF / MASUK
         # urutan halaman (tim) seperti contoh Oktober 2026; foreman tim di urutan pertama
         teams=[
