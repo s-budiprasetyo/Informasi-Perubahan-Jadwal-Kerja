@@ -50,9 +50,11 @@ Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.
 - Karyawan yang libur dari tgl 1 sampai tgl mulai: muncul di lonceng (R0) "mulai tgl X?". Bila *ya*, hari sebelum tgl mulai tidak dibuatkan perubahan dan tanggal perubahan regu = tgl mulai (bisa diubah).
 - Hari nasional: pilih tanggalnya; libur di Jadwal pada tanggal itu tidak jadi perubahan, target hari kerja orang yang dasarnya masuk di tanggal itu berkurang 1.
 
-## Potong cuti (mengurangi kurang hari)
-- Menu **Potong Cuti**: pilih bulan saldo, karyawan, tanggal pengajuan, jumlah hari, keterangan → *Simpan potong cuti*. Peringatan muncul bila potongan melebihi sisa kurang hari (boleh tetap disimpan).
-- Saldo akhir = saldo awal + kurang hari (AN) − potong cuti. Saldo bulan-bulan sesudahnya dihitung ulang otomatis.
-- Riwayat potong cuti memuat tanggal pengajuan, hari dipotong, dan sisa kurang hari setelahnya; bisa difilter per karyawan dan dihapus per catatan.
-- Google Sheets: lembar `potong_cuti_SK` / `potong_cuti_QC` (dan kolom potong_cuti di `saldo_hari_*`). Ikut dipulihkan lewat tombol Pulihkan.
-- Jadwal Kerja hasil unduh: kolom **POTONG CUTI / POT CUTI** terisi otomatis; kolom saldo bulan lalu (KRNG. HARI.../LAMA) hanya diisi bila selnya masih kosong (isian manual tidak ditimpa).
+## Saldo kurang / lebih hari & potong cuti
+- Saldo dibaca dari **Jadwal Kerja yang diunggah** (nilai kolom di Excel): saldo awal (QC: LAMA / SK: KRNG. HARI), lebih hari (GANTI HARI), potong cuti (POT CUTI / POTONG CUTI), saldo akhir (QC: SISA = AN; SK: awal + AN - lebih - cuti).
+- Saldo akhir = saldo awal + kurang bulan ini - lebih hari - potong cuti.
+- Menu **Potong Cuti**: catat tanggal pengajuan, hari, keterangan. Riwayat memuat sisa kurang hari setelah tiap pengajuan; ikut ke Google Sheets (`potong_cuti_SK` / `potong_cuti_QC`).
+- Bila saldo di Jadwal Kerja yang diunggah berbeda dengan riwayat aplikasi (saldo bulan lalu, potong cuti yang pernah dicatat, lebih hari revisi sebelumnya), muncul peringatan dan Anda **memilih**: data Jadwal Kerja unggahan (terbaru) atau data historis aplikasi. Generate baru aktif setelah memilih.
+  - Memilih *Jadwal Kerja*: saat disimpan, selisih potong cuti dicatat sebagai "Penyesuaian dari Jadwal Kerja" dan saldo awal disamakan.
+  - Memilih *historis*: file Jadwal Kerja hasil unduh diisi saldo awal / ganti hari / potong cuti dari aplikasi.
+- Unduh ulang dari Riwayat selalu mengisi kolom-kolom itu dari saldo tersimpan.

@@ -117,3 +117,14 @@ def test_jadwal_output(tmp_path):
     out = make_jadwal(open(A + '5fbf0280-JADWAL_KERJA_OKTOBER_QC.xlsx', 'rb').read(), 3, datetime.date(2026, 10, 30))
     ws = openpyxl.load_workbook(io.BytesIO(out)).active
     assert ws['B7'].value == 'Revisi : 3' and ws['Z2'].value == 'Gresik, 30 Oktober 2026' and ws['H10'].value == 'DSO4'
+
+
+def test_r1_same_file_has_no_spurious_regu():
+    """R1 memakai HRD tersimpan: keputusan PWS lama (R0) tidak boleh dianggap PWS baru."""
+    from core.depts import DEPTS
+    A = '/mnt/user-data/attachments/1a0376e9-f1cd-5af9-96bf-99b03536ce1c/'
+    j = parse_jadwal(A + '5fbf0280-JADWAL_KERJA_OKTOBER_QC.xlsx'); h = parse_hrd(A + '1c09f081-23._QC.xlsx')
+    dec = {'962': '05D002'}
+    p0, s0 = engine.compute(j, h['rows'], None, dec, None, DEPTS['QC'])
+    p1, _ = engine.compute(j, h['rows'], s0, dec, None, DEPTS['QC'])
+    assert any(p['regu'] for p in p0['people']) and not any(p['regu'] for p in p1['people'])

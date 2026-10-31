@@ -185,7 +185,7 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
         synthetic = False
         if not s and not (prev and nik in prev_by) and d in pat:
             s = dict(pws=d, nama=j['nama'], total=None, dept=None); synthetic = True   # PWS lama dipilih pengguna
-        new = d if (d in pat and not synthetic) else j['pws']
+        new = d if (d in pat and not synthetic and not (prev and nik in prev_by)) else j['pws']
         regu = None; exempt = False; in_prev = bool(prev and nik in prev_by); hol_cut = 0
         if prev and nik in prev_by:
             q = prev_by[nik]

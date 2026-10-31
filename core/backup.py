@@ -55,8 +55,8 @@ def push(store, secrets, depts):
         parts = [data[i:i + CHUNK] for i in range(0, len(data), CHUNK)] or ['']
         ws.update(values=[[i, p] for i, p in enumerate(parts)], range_name='A1'); total += len(parts)
         led = _ws(sh, f'saldo_hari_{d}'); led.clear()
-        rows = [['bulan', 'nik', 'nama', 'target', 'hari_kerja', 'kurang_hari', 'potong_cuti', 'saldo_awal', 'saldo_akhir']]
-        rows += [[r['ym'], r['nik'], r['nama'], r['target'], r['worked'], r['kurang'], r.get('cuti') or 0, r['saldo_awal'], r['saldo_akhir']]
+        rows = [['bulan', 'nik', 'nama', 'target', 'hari_kerja', 'kurang_hari_baru', 'lebih_hari', 'potong_cuti', 'saldo_awal', 'saldo_akhir']]
+        rows += [[r['ym'], r['nik'], r['nama'], r['target'], r['worked'], r['kurang'], r.get('lebih') or 0, r.get('cuti') or 0, r['saldo_awal'], r['saldo_akhir']]
                  for r in ex['ledger']]
         led.update(values=rows, range_name='A1')
         pc = _ws(sh, f'potong_cuti_{d}'); pc.clear()

@@ -27,19 +27,20 @@ def _locate(data):
 def _recap_map(data, title):
     """Cari kolom 'POTONG CUTI'/'POT CUTI' & kolom saldo bulan lalu ('KRNG. HARI ...'/'LAMA'), serta baris tiap NIK."""
     wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
-    ws = wb[title]; cuti = open_ = None; nik_col = hdr = None
+    ws = wb[title]; cuti = open_ = lebih = None; nik_col = hdr = None
     for row in ws.iter_rows(min_row=1, max_row=14):
         for c in row:
             v = str(c.value or '').strip().upper()
             if cuti is None and v in ('POTONG CUTI', 'POT CUTI'): cuti = c.column
             if open_ is None and (v.startswith('KRNG. HARI') or v.startswith('KRNG HARI') or v == 'LAMA'): open_ = c.column
+            if lebih is None and v.startswith('GANTI HARI'): lebih = c.column
             if nik_col is None and 'PRN SAP' in v: nik_col, hdr = c.column, c.row
     rows = {}
     if nik_col:
         for r in ws.iter_rows(min_row=hdr + 1, min_col=nik_col, max_col=nik_col):
             c = r[0]; v = re.sub(r'\D', '', str(c.value or ''))
             if v and v not in rows: rows[v] = c.row
-    return cuti, open_, rows
+    return cuti, open_, rows, lebih
 
 
 def _setnum(root, ref, val):
@@ -81,8 +82,8 @@ def _setcell(root, ref, text):
 
 
 def make_jadwal(data, rev, gen_date, recap=None):
-    """recap: {nik: {'cuti': hari potong cuti, 'open': saldo kurang hari bulan lalu}} -> diisi ke kolom POTONG CUTI / saldo bulan lalu.
-    Kolom saldo bulan lalu hanya diisi bila sel masih kosong (tidak menimpa isian manual)."""
+    """recap: {nik: {'open': saldo awal, 'lebih': lebih hari, 'cuti': potong cuti}} -> MENIMPA kolom saldo awal / ganti hari / potong cuti
+    di Jadwal Kerja (hanya dipakai bila pengguna memilih data historis aplikasi, atau saat unduh ulang dari Riwayat)."""
     title, rev_ref, date_ref = _locate(data)
     zin = zipfile.ZipFile(io.BytesIO(data))
     wbx = etree.fromstring(zin.read('xl/workbook.xml'))
@@ -94,12 +95,12 @@ def make_jadwal(data, rev, gen_date, recap=None):
     if rev_ref: _setcell(root, rev_ref, f'Revisi : {rev}')
     if date_ref: _setcell(root, date_ref, f'Gresik, {gen_date.day} {BULAN_ID[gen_date.month - 1]} {gen_date.year}')
     if recap:
-        cuti_c, open_c, rows = _recap_map(data, title)
+        cuti_c, open_c, rows, lebih_c = _recap_map(data, title)
         for nik, rc in recap.items():
             r = rows.get(str(nik))
             if not r: continue
-            if cuti_c and rc.get('cuti'): _setnum(root, f'{get_column_letter(cuti_c)}{r}', rc['cuti'])
-            if open_c and rc.get('open') and _cell_empty(root, f'{get_column_letter(open_c)}{r}'): _setnum(root, f'{get_column_letter(open_c)}{r}', rc['open'])
+            for c, k in ((cuti_c, 'cuti'), (open_c, 'open'), (lebih_c, 'lebih')):
+                if c and rc.get(k) is not None: _setnum(root, f'{get_column_letter(c)}{r}', rc[k])
     out = io.BytesIO()
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         for item in zin.infolist():

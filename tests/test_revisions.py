@@ -162,7 +162,25 @@ def test_potong_cuti_chain_and_recap(tmp_path):
 def test_jadwal_recap_fills_cuti_column():
     from core.jadwal_out import make_jadwal, _locate, _recap_map
     d = open(A + 'dddeacc0-JADWAL_KERJA_SK.xlsx', 'rb').read()
-    t, _, _ = _locate(d); c, o, rows = _recap_map(d, t)
-    out = make_jadwal(d, 1, datetime.date(2026, 10, 31), {'260': {'cuti': 1.5, 'open': 3}})
+    t, _, _ = _locate(d); c, o, rows, lb = _recap_map(d, t)
+    out = make_jadwal(d, 1, datetime.date(2026, 10, 31), {'260': {'cuti': 1.5, 'open': 3, 'lebih': 2}})
     ws = openpyxl.load_workbook(__import__('io').BytesIO(out))[t]
-    assert ws.cell(rows['260'], c).value == 1.5 and ws.cell(rows['260'], o).value == 3
+    assert ws.cell(rows['260'], c).value == 1.5 and ws.cell(rows['260'], o).value == 3 and ws.cell(rows['260'], lb).value == 2
+
+
+def test_read_balances_from_jadwal():
+    from core.sheetbal import read_balances
+    q = read_balances(open(A + '5fbf0280-JADWAL_KERJA_OKTOBER_QC.xlsx', 'rb').read(), 'qc')
+    assert q['23'] == dict(awal=2, baru=0, lebih=0, cuti=0, akhir=2) and q['416']['akhir'] == 2 and q['136']['akhir'] == 0
+    s = read_balances(open(A + 'dddeacc0-JADWAL_KERJA_SK.xlsx', 'rb').read(), 'sk')
+    assert s['1047']['baru'] == 1 and s['1047']['akhir'] == 1
+
+
+def test_ledger_uses_sheet_values(tmp_path):
+    st = Store(str(tmp_path / 'b.db'))
+    st.save_ledger('QC', '2026-10', {'people': [dict(nik='23', nama='S', kurang=0, awal=2.0, lebih=0)]})
+    assert st.get_ledger('QC', '2026-10')[0]['saldo_akhir'] == 2
+    st.save_ledger('QC', '2026-11', {'people': [dict(nik='23', nama='S', kurang=0, lebih=1.0)]})
+    r = st.get_ledger('QC', '2026-11')[0]
+    assert r['saldo_awal'] == 2 and r['saldo_akhir'] == 1
+    assert st.opening_known('QC', '2026-12', '23') == 1 and st.opening_known('QC', '2026-10', '23') is None

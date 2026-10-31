@@ -24,8 +24,9 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA); self.lock = threading.Lock()
-        try: self.db.execute('ALTER TABLE ledger ADD COLUMN cuti REAL DEFAULT 0'); self.db.commit()
-        except sqlite3.OperationalError: pass
+        for col in ('cuti', 'lebih'):
+            try: self.db.execute(f'ALTER TABLE ledger ADD COLUMN {col} REAL DEFAULT 0'); self.db.commit()
+            except sqlite3.OperationalError: pass
 
     # ---- revisi
     def revs(self, dept, ym):
@@ -96,15 +97,23 @@ class Store:
         r = self.db.execute('SELECT saldo_akhir FROM ledger WHERE dept=? AND ym=? AND nik=?', (dept, prev_ym(ym), nik)).fetchone()
         return r[0] if r else 0
 
+    def opening_known(self, dept, ym, nik):
+        """Saldo awal dari riwayat (isian manual atau saldo akhir bulan sebelumnya); None bila belum ada riwayat."""
+        r = self.db.execute('SELECT saldo FROM opening WHERE dept=? AND ym=? AND nik=?', (dept, ym, nik)).fetchone()
+        if r: return r[0]
+        r = self.db.execute('SELECT saldo_akhir FROM ledger WHERE dept=? AND ym=? AND nik=?', (dept, prev_ym(ym), nik)).fetchone()
+        return r[0] if r else None
+
     def save_ledger(self, dept, ym, snapshot):
-        """Kurang Hari (kolom AN) = target - hari kerja. saldo_akhir = saldo_awal + kurang - potong cuti
-        (positif = masih berhutang hari, negatif = lebih hari)."""
+        """Per orang: saldo_awal, kurang (baru), lebih hari, potong cuti; saldo_akhir = awal + kurang - lebih - cuti
+        (positif = masih kurang hari, negatif = lebih hari). 'awal'/'lebih' pada snapshot (dari Jadwal Kerja) dipakai bila ada."""
         with self.lock:
             self.db.execute('DELETE FROM ledger WHERE dept=? AND ym=?', (dept, ym))
             for p in snapshot['people']:
-                aw = self.opening(dept, ym, p['nik']); ct = self.cuti_sum(dept, ym, p['nik'])
-                self.db.execute('INSERT INTO ledger(dept,ym,nik,nama,target,worked,kurang,saldo_awal,saldo_akhir,cuti) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                                (dept, ym, p['nik'], p['nama'], p['target'], p['worked'], p['kurang'], aw, aw + p['kurang'] - ct, ct))
+                aw = p['awal'] if p.get('awal') is not None else self.opening(dept, ym, p['nik'])
+                lb = p.get('lebih') or 0; ct = self.cuti_sum(dept, ym, p['nik'])
+                self.db.execute('INSERT INTO ledger(dept,ym,nik,nama,target,worked,kurang,saldo_awal,saldo_akhir,cuti,lebih) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                                (dept, ym, p['nik'], p['nama'], p.get('target', 0), p.get('worked', 0), p['kurang'], aw, aw + p['kurang'] - lb - ct, ct, lb))
             self.db.commit()
 
     def recalc_ledgers(self, dept, from_ym):
@@ -112,7 +121,7 @@ class Store:
         for ym in sorted(m for m in self.ledger_months(dept) if m >= from_ym):
             rows = self.get_ledger(dept, ym)
             self.save_ledger(dept, ym, {'people': [dict(nik=r['nik'], nama=r['nama'], target=r['target'], worked=r['worked'],
-                                                         kurang=r['kurang']) for r in rows]})
+                                                         kurang=r['kurang'], lebih=r.get('lebih') or 0, awal=None) for r in rows]})
 
     # ---- potong cuti
     def add_cuti(self, dept, ym, nik, nama, tgl, hari, ket=''):
@@ -139,8 +148,8 @@ class Store:
         for r in self.db.execute(q, (dept, ym) if ym else (dept,)):
             r = dict(r); key = (r['ym'], r['nik'])
             if key not in run:
-                lg = self.db.execute('SELECT saldo_awal,kurang FROM ledger WHERE dept=? AND ym=? AND nik=?', (dept, r['ym'], r['nik'])).fetchone()
-                run[key] = (lg['saldo_awal'] + lg['kurang']) if lg else self.opening(dept, r['ym'], r['nik'])
+                lg = self.db.execute('SELECT saldo_awal,kurang,lebih FROM ledger WHERE dept=? AND ym=? AND nik=?', (dept, r['ym'], r['nik'])).fetchone()
+                run[key] = (lg['saldo_awal'] + lg['kurang'] - (lg['lebih'] or 0)) if lg else self.opening(dept, r['ym'], r['nik'])
             run[key] -= r['hari']; r['sisa'] = run[key]; out.append(r)
         return sorted(out, key=lambda r: (r['ym'], r['tgl'], r['id']), reverse=True)
 

@@ -13,6 +13,7 @@ from core.depts import DEPTS
 from core import qc_layout
 from core.render import render
 from core.jadwal_out import make_jadwal
+from core.sheetbal import read_balances
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, 'assets', 'template_inf.xlsx')
@@ -118,9 +119,9 @@ def plan_tables(plan):
 XL = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 
-def recap_of(dept, ym, snap):
-    """Isi kolom saldo bulan lalu & POTONG CUTI di Jadwal Kerja: {nik: {'open','cuti'}}."""
-    return {p['nik']: dict(open=store.opening(dept, ym, p['nik']), cuti=store.cuti_sum(dept, ym, p['nik'])) for p in snap['people']}
+def recap_from_ledger(dept, ym):
+    """Unduh ulang dari Riwayat: kolom saldo awal / ganti hari / potong cuti diisi dari saldo yang tersimpan."""
+    return {r['nik']: dict(open=r['saldo_awal'], lebih=r.get('lebih') or 0, cuti=r.get('cuti') or 0) for r in store.get_ledger(dept, ym)}
 
 
 def do_save():
@@ -130,6 +131,12 @@ def do_save():
     if o['hrd_rows'] is not None: store.save_hrd(o['dept'], o['ym'], o['hrd_rows'])
     store.save_decisions(o['dept'], o['ym'], o['decisions'])
     if o['rev'] == 0: store.set_setting(o['dept'], f"holidays:{o['ym']}", o['holidays'])
+    if o['bal_mode'] == 'jadwal':        # data Jadwal Kerja yang dipilih -> samakan riwayat (isian awal & penyesuaian cuti tercatat)
+        for p in o['snap']['people']:
+            if abs(p['awal'] - store.opening(o['dept'], o['ym'], p['nik'])) > 1e-9: store.set_opening(o['dept'], o['ym'], p['nik'], p['awal'])
+            d = p['cuti'] - store.cuti_sum(o['dept'], o['ym'], p['nik'])
+            if abs(d) > 1e-9:
+                store.add_cuti(o['dept'], o['ym'], p['nik'], p['nama'], datetime.date.today(), d, 'Penyesuaian dari Jadwal Kerja yang diunggah')
     store.save_ledger(o['dept'], o['ym'], o['snap'])
     store.save_file(o['dept'], o['ym'], o['rev'], o['jname'], o['jbytes'])
     o['saved'] = True
@@ -138,39 +145,10 @@ def do_save():
         except Exception as e: st.session_state['bk'] = f'Backup Google Sheets gagal: {e}'
 
 
-def preview_sheets(data):
-    """Baca Excel hasil render -> {nama sheet: DataFrame} untuk ditinjau."""
-    import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(data)); out = {}
-    for ws in wb:
-        rows = []
-        for r in range(12, ws.max_row + 1):
-            if not isinstance(ws.cell(r, 1).value, int): continue
-            v = lambda c, k=0: ws.cell(r + k, c).value
-            if 'REGU' in ws.title.upper():
-                rows.append({'No': v(1), 'NIK': v(2), 'Nama': v(3), 'Seksi': v(9), 'Dari': f"{v(10)} {v(10, 1) or ''}".strip(),
-                             'Ke': f"{v(12)} {v(12, 1) or ''}".strip(), 'Tanggal': f"{v(14)} {v(14, 1) or ''}".strip()})
-            else:
-                rows.append({'No': v(1), 'NIK': v(2), 'Nama': v(4), 'Tgl perubahan': ' '.join(str(x) for x in (v(10), v(10, 1)) if x).replace('\n', ' '),
-                             'Lama': f"{v(16)} {v(16, 1) or ''}".strip(), 'Baru': f"{v(19)} {v(19, 1) or ''}".strip()})
-        out[ws.title] = pd.DataFrame(rows)
-    return out
-
-
-@st.dialog('Tinjau hasil sebelum diunduh', width='large')
+@st.dialog('Simpan ke riwayat?')
 def review(kind):
     o = st.session_state['out']; name, data = o[kind]
     st.markdown(f"**{name}**  \n{DEPTS[o['dept']]['label']} · {ym_label(o['ym'])} · **R{o['rev']}** · dibandingkan dengan {o['basis']}")
-    if kind == 'inf':
-        pv = preview_sheets(data)
-        tabs = st.tabs([f"{k} ({len(v)})" for k, v in pv.items()])
-        for t, (k, v) in zip(tabs, pv.items()):
-            if len(v): t.dataframe(v, use_container_width=True, hide_index=True, height=320)
-            else: t.info('Sheet kosong.')
-    else:
-        st.caption(f"Salinan Jadwal Kerja yang Anda unggah, dengan 'Revisi : {o['rev']}' dan tanggal hari ini.")
-        st.dataframe(pd.DataFrame([{'NIK': p['nik'], 'Nama': p['nama'], 'Target': p['target'], 'Hari kerja': p['worked'],
-                                    'Kurang hari': p['kurang']} for p in o['snap']['people']]), use_container_width=True, hide_index=True, height=320)
     if o['saved']:
         st.success('Revisi ini sudah tersimpan di riwayat.')
         st.download_button('⬇️ Unduh', data, name, XL, on_click='ignore', type='primary', use_container_width=True)
@@ -182,7 +160,7 @@ def review(kind):
                    + (f" dan **menghapus** revisi sesudahnya: {', '.join('R%d' % r for r in after)}." if after else '.')
                    + ' Pilih "Unduh saja" bila revisi ini belum final.')
     else:
-        st.info('Belum disimpan di riwayat. Pilih salah satu; file langsung terunduh.')
+        st.info('Pilih salah satu; file langsung terunduh.')
     c1, c2 = st.columns(2)
     c1.download_button('💾 Simpan ke riwayat & unduh', data, name, XL, on_click=do_save, type='primary', use_container_width=True)
     c2.download_button('Unduh saja (tidak disimpan)', data, name, XL, on_click='ignore', use_container_width=True)
@@ -291,6 +269,38 @@ if page == 'Buat Jadwal':
                                                 p['regu']['tgl'], key=f"tgl_{dept}_{ym}_{rev}_{p['nik']}")
     plan, snap = engine.compute(jad, hrd_rows, prev, decisions, tgl, cfg, holidays)
 
+    # ---- saldo kurang/lebih hari: dibaca dari Jadwal Kerja; dibandingkan dengan riwayat aplikasi
+    bal_file = read_balances(f_j.getvalue(), cfg['kind'])
+    led_ym = {r['nik']: r for r in store.get_ledger(dept, ym)}
+    conf, rows_f, rows_h = [], {}, {}
+    for p in snap['people']:
+        nik = p['nik']; f = bal_file.get(nik)
+        h_awal = store.opening_known(dept, ym, nik); h_cuti = store.cuti_sum(dept, ym, nik)
+        h_lebih = (led_ym[nik].get('lebih') or 0) if nik in led_ym else None
+        if f is None:
+            f = dict(awal=store.opening(dept, ym, nik), baru=p['kurang'], lebih=0.0, cuti=h_cuti, akhir=None)
+            f['akhir'] = f['awal'] + f['baru'] - f['cuti']
+        else:
+            for lab, fv, hv in (('Saldo awal', f['awal'], h_awal), ('Lebih hari', f['lebih'], h_lebih), ('Potong cuti', f['cuti'], h_cuti)):
+                if hv is not None and abs(fv - hv) > 1e-9:
+                    conf.append({'NIK': nik, 'Nama': p['nama'], 'Data': lab, 'Jadwal Kerja unggahan': fv, 'Historis aplikasi': hv})
+        h = dict(awal=h_awal if h_awal is not None else f['awal'], baru=f['baru'], lebih=h_lebih if h_lebih is not None else f['lebih'], cuti=h_cuti)
+        h['akhir'] = h['awal'] + h['baru'] - h['lebih'] - h['cuti']
+        rows_f[nik], rows_h[nik] = f, h
+    bal_mode = 'jadwal'
+    if conf:
+        st.warning(f'⚠️ {len({c["NIK"] for c in conf})} orang: saldo di Jadwal Kerja yang diunggah berbeda dengan data historis aplikasi '
+                   '(saldo bulan lalu / potong cuti yang pernah Anda catat). Pilih data yang dipakai:')
+        st.dataframe(pd.DataFrame(conf), use_container_width=True, hide_index=True)
+        ch_ = st.radio('Data saldo yang dipakai', ['Data dari Jadwal Kerja yang saya unggah (terbaru)', 'Data historis yang tercatat di aplikasi'],
+                       index=None, key=f'balmode_{dept}_{ym}_{rev}', help='Pilihan ini menentukan saldo awal, lebih hari, dan potong cuti pada revisi ini.')
+        bal_mode = None if ch_ is None else ('jadwal' if ch_.startswith('Data dari') else 'historis')
+    for p in snap['people']:
+        v = (rows_h if bal_mode == 'historis' else rows_f)[p['nik']]
+        p.update(awal=v['awal'], lebih=v['lebih'], cuti=v['cuti'], kurang=v['baru'], akhir=v['akhir'])
+    led = pd.DataFrame([{'NIK': p['nik'], 'Nama': p['nama'], 'Saldo awal': p['awal'], 'Kurang bulan ini': p['kurang'], 'Lebih hari': p['lebih'],
+                         'Potong cuti': p['cuti'], 'Saldo akhir': p['akhir']} for p in snap['people']])
+
     basis = 'HRD (jadwal dasar)' if prev is None else f'revisi sebelumnya R{rev - 1}'
     st.subheader(f'Pratinjau R{rev}  -  dibandingkan dengan {basis}')
     ch, rg = plan_tables(plan)
@@ -307,28 +317,27 @@ if page == 'Buat Jadwal':
             st.info('Sheet yang akan dibuat → ' + ' | '.join(lines) + ' | PERUBAHAN REGU')
         else:
             st.info(f'Sheet yang akan dibuat → R{rev} (semua perubahan dari R{rev - 1}) | PERUBAHAN REGU (bila ada)')
-    t1, t2, t3 = st.tabs(['Perubahan jadwal', 'Perubahan regu', 'Kurang hari (kolom AN)'])
+    t1, t2, t3 = st.tabs(['Perubahan jadwal', 'Perubahan regu', 'Saldo hari'])
     if len(ch): t1.dataframe(ch, use_container_width=True, hide_index=True)
     else: t1.info('Tidak ada perubahan jadwal.')
     if len(rg): t2.dataframe(rg, use_container_width=True, hide_index=True)
     else: t2.info('Tidak ada perubahan regu.')
-    led = pd.DataFrame([{'NIK': p['nik'], 'Nama': p['nama'], 'Target': p['target'], 'Hari kerja': p['worked'],
-                         'Kurang hari': p['kurang'], 'Saldo awal': store.opening(dept, ym, p['nik'])} for p in snap['people']])
-    led['Saldo akhir'] = led['Saldo awal'] + led['Kurang hari']
     t3.dataframe(led, use_container_width=True, hide_index=True)
-    t3.caption('Kurang hari = target (file HRD) - hari kerja di Jadwal. Positif = masih kurang, negatif = lebih. Lebih hari bulan ini mengurangi kekurangan bulan lalu.')
+    t3.caption('Dibaca dari kolom saldo di Jadwal Kerja yang diunggah. Saldo akhir = saldo awal + kurang bulan ini - lebih hari - potong cuti.')
+    needs_pick = bool(conf) and bal_mode is None
 
-    if st.button(f'⚙️ Generate R{rev}', type='primary', disabled=bool(plan.get('pending'))):
+    if st.button(f'⚙️ Generate R{rev}', type='primary', disabled=bool(plan.get('pending')) or needs_pick):
         gen = datetime.date.today()
         data, info = render_bytes(dept, plan, rev, gen)
         st.session_state['out'] = dict(
             dept=dept, ym=ym, rev=rev, info=info, plan=plan, snap=snap, basis=basis, decisions=decisions, holidays=holidays,
             jname=f_j.name, jbytes=f_j.getvalue(), hname=f_h.name if f_h else '', hrd_rows=hrd_rows if f_h else None,
-            inf=(file_name(dept, ym, rev), data), jad=(jadwal_name(dept, ym, rev), make_jadwal(f_j.getvalue(), rev, gen, recap_of(dept, ym, snap))), saved=False)
+            inf=(file_name(dept, ym, rev), data), jad=(jadwal_name(dept, ym, rev), make_jadwal(f_j.getvalue(), rev, gen, {p['nik']: dict(open=p['awal'], lebih=p['lebih'], cuti=p['cuti']) for p in snap['people']} if bal_mode == 'historis' else None)),
+            bal_mode=bal_mode, saved=False)
         st.session_state.pop('bk', None)
     o = st.session_state.get('out')
     if o and o['dept'] == dept and o['ym'] == ym and o['rev'] == rev:
-        st.success(f"R{o['rev']} sudah dibuat (belum disimpan ke riwayat). Klik tombol unduh untuk meninjau, lalu pilih simpan atau tidak.")
+        st.success(f"R{o['rev']} sudah dibuat (belum disimpan ke riwayat). Klik salah satu tombol unduh, lalu pilih simpan ke riwayat atau tidak.")
         d1, d2 = st.columns(2)
         if d1.button('⬇️ Unduh Jadwal Kerja', use_container_width=True): review('jad')
         if d2.button('⬇️ Unduh Informasi Perubahan Jadwal', type='primary', use_container_width=True): review('inf')
@@ -352,7 +361,7 @@ elif page == 'Riwayat':
     data, info = render_bytes(d_, rec['plan'], r_, datetime.date.today())
     c1, c2 = st.columns(2)
     jf = store.get_file(d_, y_, r_)
-    if jf: c1.download_button('⬇️ Unduh Jadwal Kerja (tanggal header = hari ini)', make_jadwal(jf[1], r_, datetime.date.today(), recap_of(d_, y_, rec['snapshot'])),
+    if jf: c1.download_button('⬇️ Unduh Jadwal Kerja (tanggal header = hari ini)', make_jadwal(jf[1], r_, datetime.date.today(), recap_from_ledger(d_, y_)),
                               jadwal_name(d_, y_, r_), XL, use_container_width=True)
     else: c1.info('Berkas Jadwal Kerja revisi ini tidak tersimpan di database ini.')
     c2.download_button('⬇️ Unduh Informasi Perubahan Jadwal (tanggal header = hari ini)', data, file_name(d_, y_, r_), XL,
@@ -425,16 +434,16 @@ elif page == 'Saldo Hari':
     months = store.ledger_months(dept)
     if not months: st.info('Belum ada data. Saldo terisi saat Anda menyimpan revisi.'); st.stop()
     ym = st.selectbox('Bulan', months, format_func=ym_label)
-    df = pd.DataFrame(store.get_ledger(dept, ym))[['nik', 'nama', 'target', 'worked', 'kurang', 'saldo_awal', 'cuti', 'saldo_akhir']]
-    df.columns = ['NIK', 'Nama', 'Target', 'Hari kerja', 'Kurang hari (AN)', 'Saldo awal', 'Potong cuti', 'Saldo akhir']
+    df = pd.DataFrame(store.get_ledger(dept, ym))[['nik', 'nama', 'saldo_awal', 'kurang', 'lebih', 'cuti', 'saldo_akhir']]
+    df.columns = ['NIK', 'Nama', 'Saldo awal', 'Kurang bulan ini', 'Lebih hari', 'Potong cuti', 'Saldo akhir']
     st.dataframe(df, use_container_width=True, hide_index=True)
-    st.caption('Saldo akhir = saldo awal + kurang hari bulan ini - potong cuti. Contoh: Okt kurang 4, Nov lebih 1 → sisa 3. Potong cuti dicatat di menu "Potong Cuti".')
+    st.caption('Saldo akhir = saldo awal + kurang bulan ini - lebih hari - potong cuti (sesuai kolom di Jadwal Kerja). Potong cuti dicatat di menu "Potong Cuti".')
     with st.expander('Koreksi saldo awal manual'):
         nik = st.selectbox('Karyawan', df['NIK'], format_func=lambda n: f"{n} - {df.set_index('NIK').loc[n, 'Nama']}")
         v = st.number_input('Saldo awal', value=float(df.set_index('NIK').loc[nik, 'Saldo awal']), step=1.0)
         if st.button('Simpan saldo awal'):
             store.set_opening(dept, ym, nik, v)
-            snap = {'people': [dict(nik=r['nik'], nama=r['nama'], target=r['target'], worked=r['worked'], kurang=r['kurang'])
+            snap = {'people': [dict(nik=r['nik'], nama=r['nama'], target=r['target'], worked=r['worked'], kurang=r['kurang'], lebih=r.get('lebih') or 0)
                                for r in store.get_ledger(dept, ym)]}
             store.save_ledger(dept, ym, snap); st.rerun()
 
