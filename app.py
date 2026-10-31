@@ -258,43 +258,45 @@ if page == 'Buat Jadwal':
 
     anoms = engine.detect(jad, hrd_rows, prev, cfg)
     saved = store.get_decisions(dept, ym)
-    ACT = ('pws_mismatch', 'hrd_only', 'jadwal_only', 'late_start')
+    ACT = ('pws_mismatch', 'hrd_only', 'jadwal_only')
     n_act = sum(1 for a in anoms if a['kind'] in ACT)
+    decisions = {k: v for k, v in saved.items()}
+    for a in anoms:
+        if a['kind'] in ACT:
+            decisions[a['nik']] = st.session_state.get(f"dec_{a['nik']}", saved.get(a['nik'], a.get('suggest', a.get('default', 'abaikan'))))
+    plan, snap = engine.compute(jad, hrd_rows, prev, decisions, None, cfg, holidays)
+    # info selisih hari kerja di Jadwal vs target HRD (hanya informasi)
+    sel = []
+    for p in snap['people']:
+        d = p['target'] - p['worked']
+        if abs(d) > 1e-9:
+            sel.append(dict(nama=p['nama'], nik=p['nik'], worked=p['worked'], target=p['target'],
+                            txt=f"kurang {d:g} hari" if d > 0 else f"lebih {-d:g} hari"))
+    # Lonceng: hanya yang perlu diputuskan pengguna = ada di HRD tetapi tidak ada di Jadwal Kerja (+ PWS orang baru bila belum bisa ditentukan).
+    # Selisih hari kerja hanya informasi. Selebihnya diputuskan otomatis dari data HRD dan dicatat di "Keputusan otomatis".
+    todo = [a for a in anoms if a['kind'] == 'hrd_only' or (a['kind'] == 'jadwal_only' and a['default'] == '(pilih)')]
+    auto = [a for a in anoms if a not in todo]
     top = st.columns([6, 1])
-    with top[1].popover(f'🔔 {len(anoms)}', use_container_width=True):
-        if not anoms: st.write('Tidak ada catatan.')
-        for a in anoms:
+    with top[1].popover(f'🔔 {len(todo) + (1 if sel else 0)}', use_container_width=True):
+        if not todo and not sel: st.write('Tidak ada yang perlu diputuskan.')
+        for a in todo:
             st.markdown(f"**{a['nama']}** ({a['nik']})  \n{a['msg']}")
-            if a['kind'] == 'pws_mismatch':
-                d = saved.get(a['nik'], a['suggest']); opts = a['options']
-                st.selectbox('Pakai PWS', opts, index=opts.index(d) if d in opts else 0, key=f"dec_{a['nik']}")
-            elif a['kind'] == 'jadwal_only':
+            if a['kind'] == 'jadwal_only':
                 d = saved.get(a['nik'], a['default']); opts = a['options']
                 st.selectbox('PWS lama (dasar)', opts, index=opts.index(d) if d in opts else 0, key=f"dec_{a['nik']}")
-            elif a['kind'] == 'late_start':
-                d = saved.get('start:' + a['nik'], a['default'])
-                st.selectbox(f"Karyawan baru mulai tgl {a['start']}?", a['options'], index=a['options'].index(d) if d in a['options'] else 0,
-                             key=f"dec_start_{a['nik']}")
-            elif a['kind'] == 'hrd_only':
+            else:
                 d = saved.get(a['nik'], 'abaikan')
                 st.selectbox('Keputusan', a['options'], index=a['options'].index(d) if d in a['options'] else 0,
                              key=f"dec_{a['nik']}", help='Masukkan ke jadwal (jadwal = jadwal HRD) atau abaikan.')
             st.divider()
-    if n_act: top[0].info(f'{n_act} catatan di 🔔 sudah terisi nilai bawaan; periksa bila perlu.')
-    decisions = {k: v for k, v in saved.items()}
-    for a in anoms:
-        if a['kind'] == 'late_start':
-            decisions['start:' + a['nik']] = st.session_state.get(f"dec_start_{a['nik']}", saved.get('start:' + a['nik'], a['default']))
-        elif a['kind'] in ACT:
-            decisions[a['nik']] = st.session_state.get(f"dec_{a['nik']}", saved.get(a['nik'], a.get('suggest', a.get('default', 'abaikan'))))
-    plan0, _ = engine.compute(jad, hrd_rows, prev, decisions, None, cfg, holidays)
-    tgl = {}
-    with st.expander('Tanggal efektif perubahan regu (bisa diubah)', expanded=0 < sum(1 for p in plan0['people'] if p['regu']) <= 6):
-        for p in plan0['people']:
-            if p['regu']:
-                tgl[p['nik']] = st.number_input(f"{p['nama_hrd']}  {p['regu']['lama']} → {p['regu']['baru']}", 1, 31,
-                                                p['regu']['tgl'], key=f"tgl_{dept}_{ym}_{rev}_{p['nik']}")
-    plan, snap = engine.compute(jad, hrd_rows, prev, decisions, tgl, cfg, holidays)
+        if sel:
+            st.markdown(f'**Info: selisih hari kerja di Jadwal dibanding target HRD** ({len(sel)} orang)')
+            st.dataframe(pd.DataFrame([{'NIK': x['nik'], 'Nama': x['nama'], 'Hari kerja': x['worked'], 'Target HRD': x['target'], 'Selisih': x['txt']} for x in sel]),
+                         use_container_width=True, hide_index=True)
+        if auto:
+            with st.expander(f'Keputusan otomatis ({len(auto)})'):
+                for a in auto: st.caption(f"{a['nama']} ({a['nik']}): {a['msg']}")
+    if todo: top[0].info(f'{len(todo)} nama perlu diputuskan di 🔔.')
 
     # ---- saldo kurang/lebih hari: dibaca dari Jadwal Kerja; dibandingkan dengan riwayat aplikasi
     bal_file = _bal(f_j.getvalue(), cfg['kind'])

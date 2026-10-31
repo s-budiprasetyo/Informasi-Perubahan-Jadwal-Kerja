@@ -184,3 +184,47 @@ def test_ledger_uses_sheet_values(tmp_path):
     r = st.get_ledger('QC', '2026-11')[0]
     assert r['saldo_awal'] == 2 and r['saldo_akhir'] == 1
     assert st.opening_known('QC', '2026-12', '23') == 1 and st.opening_known('QC', '2026-10', '23') is None
+
+
+def test_matches_manual_sk(tmp_path):
+    """Hasil SK harus sama isinya dengan form buatan manual (Oktober): termasuk Dio (ada di HRD -> tanggal 1-7 tetap dicatat)."""
+    import re
+    plan, _ = engine.compute(jad, hrd['rows'], None, {'409': '2G0301'})
+    out = str(tmp_path / 'sk.xlsx'); render_inf(plan, 0, datetime.date(2026, 10, 9), TPL, out)
+    man = os.path.join(os.path.dirname(__file__), 'fixtures', 'manual_sk_oktober.xlsx')
+
+    def dump(path):
+        wb = openpyxl.load_workbook(path); res = {}
+        for ws in wb:
+            res[ws.title] = [[[re.sub(r'\s+', ' ', str(ws.cell(r + k, c).value).strip()) for c in range(1, 30) if ws.cell(r + k, c).value is not None] for k in (0, 1)]
+                             for r in range(1, ws.max_row + 1) if isinstance(ws.cell(r, 1).value, int)]
+        return res
+    a, b = dump(out), dump(man)
+    assert a == b
+    dio = next(r for r in a['SULTON'] if r[0][1] == '871')
+    assert '1, 2, 5, 6, 7, 14, 20 & 26 Oktober 2026' in dio[0]
+
+
+def test_new_person_not_in_hrd_skips_days_before_start():
+    """Orang yang TIDAK ada di HRD (karyawan baru): libur sebelum tanggal masuk bukan perubahan."""
+    j = copy.deepcopy(jad); hr = copy.deepcopy(hrd['rows'])
+    p = next(x for x in j['people'] if x['nik'] == '871'); del hr['871']
+    pl, _ = engine.compute(j, hr, None, {'409': '2G0301', '871': '05D004'})
+    q = next(x for x in pl['people'] if x['nik'] == '871')
+    assert all(not any(d < 8 for d in ds) for a_, b_, ds in q['ents'])
+
+
+def test_sk_matches_manual_form():
+    """R0 SK harus sama isinya dengan form manual (semua sheet, semua baris) - termasuk karyawan lama yang libur tgl 1-7."""
+    import re
+    from core.depts import DEPTS
+    from core.render import render
+    import tempfile
+    plan, _ = engine.compute(jad, hrd['rows'], None, {'409': '2G0301', '1074': 'abaikan', '1075': 'abaikan'}, None, DEPTS['SK'])
+    out = tempfile.mktemp(suffix='.xlsx'); render('SK', plan, 0, datetime.date(2026, 10, 9), out)
+
+    def dump(p):
+        wb = openpyxl.load_workbook(p)
+        return {ws.title: [[[re.sub(r'\s+', ' ', str(ws.cell(r + k, c).value).strip()) for c in range(1, 30) if ws.cell(r + k, c).value is not None]
+                            for k in (0, 1)] for r in range(1, ws.max_row + 1) if isinstance(ws.cell(r, 1).value, int)] for ws in wb}
+    assert dump(out) == dump(os.path.join(os.path.dirname(__file__), 'fixtures', 'manual_sk_oktober.xlsx'))

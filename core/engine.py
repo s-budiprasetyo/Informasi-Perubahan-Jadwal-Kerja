@@ -121,21 +121,6 @@ def detect(jad, hrd_rows, prev=None, cfg=None):
                             options=sorted({p['pws'], sug}),
                             msg=f"Kode PWS di Jadwal ({p['pws']}) tidak cocok dengan pola harinya "
                                 f"({bad} dari {len(worked)} hari kerja memakai kode di luar pola PWS). Disarankan: {sug}."))
-    if not prev and hrd_rows is not None:
-        for p in jad['people']:
-            s0 = hrd_rows.get(p['nik'])
-            hp = s0['pws'] if s0 else cfg.get('new_person_pws')
-            if not hp or p['pws'] not in pat or ensure_pat(pat, hp) is None: continue
-            act = p['days'][:nd]
-            k0 = next((i for i, x in enumerate(act) if x != 'OFF'), None)
-            if not k0: continue
-            base, _, _ = blend_base(hp, p['pws'], act, pat, tuple(cfg.get('exempt_pws', ('05D035',))))
-            exp = sum(1 for i in range(k0) if base[i] != 'OFF')
-            if exp >= 1:
-                out.append(dict(kind='late_start', nik=p['nik'], nama=p['nama'], start=k0 + 1, expected=exp,
-                                default='ya' if exp >= 3 else 'tidak', options=['ya', 'tidak'],
-                                msg=f"Libur dari tanggal 1 sampai {k0}, padahal dasar jadwal masuk {exp} hari di rentang itu. "
-                                    f"Karyawan baru yang mulai masuk tanggal {k0 + 1}? 'ya' = libur sebelum tanggal itu tidak dibuatkan perubahan."))
     for p in jad['people']:
         for c in set(p['days']):
             if c != 'OFF' and c not in HOURS:
@@ -204,7 +189,7 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
             base = list(base)
             # karyawan baru di tengah bulan: libur sebelum tanggal masuk bukan perubahan jadwal
             k0 = next((i for i, x in enumerate(act) if x != 'OFF'), None)
-            if decisions.get('start:' + nik) == 'ya' and k0:
+            if synthetic and k0:            # tidak ada di HRD = karyawan baru: libur sebelum tanggal masuk bukan perubahan
                 for i in range(k0): base[i] = act[i]
                 starts[nik] = k0 + 1
                 if regu: regu['tgl'] = max(regu['tgl'], k0 + 1)

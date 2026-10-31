@@ -63,3 +63,8 @@ Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.
 - Sheet **OFF** = semua perubahan X → OFF, sheet **MASUK** = semua OFF → X; tiap orang satu baris dengan tanggalnya sendiri (tanggal boleh berbeda-beda), urutan mengikuti tim. Sheet **R0** hanya untuk tukar kode jam (X → Y) dan hanya dibuat bila ada. Sudah dicocokkan dengan form buatan manual (tests/fixtures/manual_qc_oktober.xlsx).
 - PERUBAHAN REGU: urutan mengikuti tim; bila lebih dari 23 orang dibagi dua halaman seimbang, nomor mulai 1 tiap halaman.
 - Jendela unduh menutup otomatis setelah tombol diklik; backup Google Sheets berjalan di latar belakang.
+
+## Aturan karyawan baru & lonceng (final)
+- Orang yang **ada di HRD** = karyawan lama: semua tanggal libur/masuk dibandingkan dengan jadwal HRD, termasuk tanggal 1 sampai tanggal ia mulai masuk (cocok dengan form manual SK Oktober).
+- Orang yang **tidak ada di HRD** (karyawan baru): libur sebelum tanggal masuk tidak dibuatkan perubahan (otomatis, tanpa pertanyaan).
+- Lonceng hanya memuat: orang di HRD yang tidak ada di Jadwal Kerja (pilih masukkan/abaikan), PWS lama karyawan baru, kode PWS yang tidak cocok, dan **info selisih hari kerja vs target HRD** (kurang/lebih n hari). Tanggal efektif regu dihitung otomatis (tidak ada isian).
