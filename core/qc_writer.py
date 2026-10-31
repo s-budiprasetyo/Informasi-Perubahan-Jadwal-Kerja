@@ -94,17 +94,23 @@ def _list_sheet(W, D, pages, date_txt, BULAN, alasan):
             _drawing_pages(D('drawing1.xml'), n), PAGE * n)
 
 
-def _regu_sheet(W, D, people, regu_name, BULAN, date_txt):
+def _regu_sheet(W, D, people, regu_name, BULAN, date_txt, teams=None):
     rt = etree.parse(W('sheet3.xml')); root = rt.getroot()
     rows = {int(r.get('r')): r for r in root.find(q('sheetData'))}
     for r in list(range(12, 58)) + list(range(69, 115)):
         if r in rows: clear_row(rows[r])
     ps = [p for p in people if p['regu']]
     if len(ps) > 46: raise ValueError('Form PERUBAHAN REGU hanya muat 46 orang (2 halaman).')
-    for i, p in enumerate(ps):
-        r0 = (12 + 2 * i) if i < 23 else (69 + 2 * (i - 23)); g = p['regu']
+    # urutan mengikuti tim (halaman OFF/MASUK); bila lebih dari 23 orang dibagi dua halaman seimbang (mis. 37 -> 18 + 19), nomor mulai 1 tiap halaman
+    ps = [p for t in (teams or []) for p in t if p['regu']] or ps
+    pages = [ps] if len(ps) <= 23 else [ps[:len(ps) // 2], ps[len(ps) // 2:]]
+    slots = []
+    for pi, g in enumerate(pages):
+        for k, p in enumerate(g): slots.append(((12 if pi == 0 else 69) + 2 * k, k + 1, p))
+    for r0, num, p in slots:
+        g = p['regu']
         a, b = rows[r0], rows[r0 + 1]
-        for col, v in [('A', i + 1), ('B', int(p['nik'])), ('C', p['nama_hrd'] if regu_name == 'hrd' else p['nama']),
+        for col, v in [('A', num), ('B', int(p['nik'])), ('C', p['nama_hrd'] if regu_name == 'hrd' else p['nama']),
                        ('I', 'QC'), ('J', g['lama']), ('L', g['baru']), ('N', f"{g['tgl']} {BULAN}"), ('R', 'Kebutuhan Produksi')]:
             setcell(a, col, v)
         for col, v in [('J', REGU_TXT.get(g['lama'], '')), ('L', REGU_TXT.get(g['baru'], '')), ('N', '( Seterusnya )')]:
@@ -114,7 +120,7 @@ def _regu_sheet(W, D, people, regu_name, BULAN, date_txt):
     sv = root.find(q('sheetViews'))[0]; sv.set('topLeftCell', 'A1'); sv.attrib.pop('tabSelected', None)
     for sel in sv.findall(q('selection')): sel.set('activeCell', 'A1'); sel.set('sqref', 'A1')
     return (etree.tostring(rt, xml_declaration=True, encoding='UTF-8', standalone=True),
-            open(D('drawing3.xml'), 'rb').read(), 115 if len(ps) > 23 else 58, len(ps))
+            open(D('drawing3.xml'), 'rb').read(), 115 if len(pages) > 1 else 58, len(ps))
 
 
 def _safe(name, used):
@@ -204,26 +210,24 @@ def render_qc(plan, rev, gen_date, template, out_path, cfg, teams=None, bulk_pct
         sheets.append(dict(name=_safe(name, used), xml=xml, drawing=drw, last=last, regu=regu))
 
     if rev == 0:
-        bulks, rest = qc_layout.split_bulk(plan, pct)
-        multi = {k: sum(1 for b in bulks if b['kind'] == k) > 1 for k in ('off', 'on')}
-        for b in bulks:
+        kinds = qc_layout.split_kinds(plan); info['bulk'] = []
+        for kind, nm in (('off', 'OFF'), ('on', 'MASUK')):
             pages = []
-            for team in tm:
-                rows = [(p['nik'], p['nama'], *( (e[0], e[1]) ), [b['date']]) for p in team if p['nik'] in b['niks']
-                        for e in p['ents'] if b['date'] in e[2] and ((e[1] == 'OFF') if b['kind'] == 'off' else (e[0] == 'OFF'))]
+            for team in tm:     # tiap tim = satu halaman (urutan tim mengikuti form manual)
+                rows = [(p['nik'], p['nama'], e[0], e[1], e[2]) for p in team for e in kinds[kind].get(p['nik'], [])]
                 if rows: pages.extend(_pack(rows))
-            base = 'OFF' if b['kind'] == 'off' else 'MASUK'
-            nm = f"{base} {b['date']} {BULAN_ABBR[m - 1]}" if multi[b['kind']] else base
-            x, d, last = _list_sheet(W, D, pages, date_txt, BULAN, alasan); add(nm, x, d, last)
-        rows = [(p['nik'], p['nama'], e[0], e[1], e[2]) for p in plan['people'] for e in rest.get(p['nik'], [])]
-        if rows or not bulks:
+            if pages:
+                x, d, last = _list_sheet(W, D, pages, date_txt, BULAN, alasan); add(nm, x, d, last)
+                info['bulk'].append((kind, len(kinds[kind]), sum(len(r) for r in pages)))
+        rows = [(p['nik'], p['nama'], e[0], e[1], e[2]) for p in plan['people'] for e in kinds['rest'].get(p['nik'], [])]
+        if rows or not sheets:
             x, d, last = _list_sheet(W, D, _pack(rows), date_txt, BULAN, alasan); add('R0', x, d, last)
-        info['bulk'] = [(b['kind'], b['date'], len(b['niks'])) for b in bulks]; info['rest'] = len(rows)
+        info['rest'] = len(rows)
     else:
         rows = [(p['nik'], p['nama'], e[0], e[1], e[2]) for p in plan['people'] for e in p['ents']]
         x, d, last = _list_sheet(W, D, _pack(rows), date_txt, BULAN, alasan); add(f'R{rev}', x, d, last)
         info['rest'] = len(rows)
-    x, d, last, nr = _regu_sheet(W, D, plan['people'], cfg.get('regu_name', 'jadwal'), BULAN, date_txt)
+    x, d, last, nr = _regu_sheet(W, D, plan['people'], cfg.get('regu_name', 'jadwal'), BULAN, date_txt, tm)
     info['regu'] = nr
     if nr or rev == 0 and False: add('PERUBAHAN REGU', x, d, last, regu=True)
     assemble(src, sheets, out_path)

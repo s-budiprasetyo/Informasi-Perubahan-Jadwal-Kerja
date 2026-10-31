@@ -165,9 +165,10 @@ class Store:
 
     def export_all(self, dept=None):
         out = {}
-        for t in TABLES:
-            q, args = (f'SELECT * FROM {t} WHERE dept=?', (dept,)) if dept else (f'SELECT * FROM {t}', ())
-            out[t] = [dict(r) for r in self.db.execute(q, args)]
+        with self.lock:
+            for t in TABLES:
+                q, args = (f'SELECT * FROM {t} WHERE dept=?', (dept,)) if dept else (f'SELECT * FROM {t}', ())
+                out[t] = [dict(r) for r in self.db.execute(q, args)]
         return out
 
     def import_all(self, data, dept=None):

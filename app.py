@@ -1,8 +1,9 @@
 """Aplikasi Streamlit - Informasi Perubahan Jadwal Jam Kerja (Shuttle Kiln).
 Jalankan:  streamlit run app.py"""
-import os, io, tempfile, datetime
+import os, io, tempfile, datetime, threading
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from core.consts import next_ym, BULAN_ID, BULAN_ABBR, ym_label, prev_ym, sheet_suffix, month_len
 from core.parsers import parse_jadwal, parse_hrd
@@ -69,6 +70,31 @@ def secrets_obj():
 
 @st.cache_data(show_spinner=False)
 def _pj(b): return parse_jadwal(io.BytesIO(b))
+
+
+@st.cache_data(show_spinner=False)
+def _bal(b, kind): return read_balances(b, kind)
+
+
+def push_async():
+    """Backup Google Sheets di latar belakang supaya tombol/jendela tidak menunggu beberapa detik."""
+    sec = secrets_obj()
+    if not backup.configured(sec): return
+    def run():
+        try: backup.push(store, sec, list(DEPTS))
+        except Exception as e: print('Backup Google Sheets gagal:', e)
+    threading.Thread(target=run, daemon=True).start()
+
+
+# Menutup jendela otomatis setelah tombol unduh di dalam jendela diklik (dipasang sekali di halaman induk).
+_CLOSER = '''<script>
+(function(){var p=window.parent,d=p.document;if(p.__dlgCloser)return;p.__dlgCloser=true;
+ d.addEventListener('click',function(e){
+  var b=e.target.closest&&e.target.closest('[role="dialog"] [data-testid="stDownloadButton"]');
+  if(!b)return;
+  setTimeout(function(){var c=d.querySelector('[role="dialog"] button[aria-label="Close"]');if(c)c.click();},700);
+ },true);})();
+</script>'''
 
 
 @st.cache_data(show_spinner=False)
@@ -140,35 +166,36 @@ def do_save():
     store.save_ledger(o['dept'], o['ym'], o['snap'])
     store.save_file(o['dept'], o['ym'], o['rev'], o['jname'], o['jbytes'])
     o['saved'] = True
-    if backup.configured(secrets_obj()):
-        try: backup.push(store, secrets_obj(), list(DEPTS)); st.session_state['bk'] = 'Backup Google Sheets berhasil.'
-        except Exception as e: st.session_state['bk'] = f'Backup Google Sheets gagal: {e}'
+    push_async()
 
 
 @st.dialog('Simpan ke riwayat?')
-def review(kind):
+def review(kind, warn=''):
+    """Tampilan jendela sengaja tetap sama setelah tombol diklik (tanpa kedipan); jendela ditutup oleh _CLOSER."""
     o = st.session_state['out']; name, data = o[kind]
     st.markdown(f"**{name}**  \n{DEPTS[o['dept']]['label']} · {ym_label(o['ym'])} · **R{o['rev']}** · dibandingkan dengan {o['basis']}")
-    if o['saved']:
-        st.success('Revisi ini sudah tersimpan di riwayat.')
-        st.download_button('⬇️ Unduh', data, name, XL, on_click='ignore', type='primary', use_container_width=True)
-        return
-    ex = store.get_rev(o['dept'], o['ym'], o['rev'])
-    if ex:
-        after = [r for r in store.revs(o['dept'], o['ym']) if r > o['rev']]
-        st.warning(f"⚠️ R{o['rev']} bulan ini sudah ada (disimpan {ex['created']}). Menyimpan akan **menimpanya**"
-                   + (f" dan **menghapus** revisi sesudahnya: {', '.join('R%d' % r for r in after)}." if after else '.')
-                   + ' Pilih "Unduh saja" bila revisi ini belum final.')
-    else:
-        st.info('Pilih salah satu; file langsung terunduh.')
+    if warn: st.warning(warn)
+    else: st.info('Pilih salah satu; file langsung terunduh.')
     c1, c2 = st.columns(2)
     c1.download_button('💾 Simpan ke riwayat & unduh', data, name, XL, on_click=do_save, type='primary', use_container_width=True)
     c2.download_button('Unduh saja (tidak disimpan)', data, name, XL, on_click='ignore', use_container_width=True)
 
 
+def open_review(kind):
+    o = st.session_state['out']; warn = ''
+    ex = store.get_rev(o['dept'], o['ym'], o['rev'])
+    if ex:
+        after = [r for r in store.revs(o['dept'], o['ym']) if r > o['rev']]
+        warn = (f"⚠️ R{o['rev']} bulan ini sudah ada (disimpan {ex['created']}). Menyimpan akan **menimpanya**"
+                + (f" dan **menghapus** revisi sesudahnya: {', '.join('R%d' % r for r in after)}." if after else '.')
+                + ' Pilih "Unduh saja" bila revisi ini belum final.')
+    review(kind, warn)
+
+
 dept = st.sidebar.selectbox('Departemen', list(DEPTS), format_func=lambda k: f"{k} - {DEPTS[k]['label']}", key='dept_sel')
 cfg = DEPTS[dept]
 st.sidebar.caption(cfg['note'])
+components.html(_CLOSER, height=0)
 page = st.sidebar.radio('Menu', ['Buat Jadwal', 'Riwayat', 'Saldo Hari', 'Potong Cuti', 'Pengaturan'])
 st.sidebar.caption('PT. Surya Pertiwi Nusantara - Gresik')
 if st.sidebar.button('Keluar'):
@@ -270,7 +297,7 @@ if page == 'Buat Jadwal':
     plan, snap = engine.compute(jad, hrd_rows, prev, decisions, tgl, cfg, holidays)
 
     # ---- saldo kurang/lebih hari: dibaca dari Jadwal Kerja; dibandingkan dengan riwayat aplikasi
-    bal_file = read_balances(f_j.getvalue(), cfg['kind'])
+    bal_file = _bal(f_j.getvalue(), cfg['kind'])
     led_ym = {r['nik']: r for r in store.get_ledger(dept, ym)}
     conf, rows_f, rows_h = [], {}, {}
     for p in snap['people']:
@@ -311,10 +338,9 @@ if page == 'Buat Jadwal':
     if plan.get('pending'): st.error('Ada orang yang belum diputuskan di 🔔 (PWS lama). Pilih dulu sebelum membuat Excel.')
     if cfg['kind'] == 'qc':
         if rev == 0:
-            bl, rest = qc_layout.split_bulk(plan, pct_of(dept))
-            lines = [f"{'OFF' if b['kind'] == 'off' else 'MASUK'} tgl {b['date']}: {len(b['niks'])} orang" for b in bl]
-            lines.append(f"R0 (tidak teratur): {sum(len(v) for v in rest.values())} baris")
-            st.info('Sheet yang akan dibuat → ' + ' | '.join(lines) + ' | PERUBAHAN REGU')
+            kd = qc_layout.split_kinds(plan)
+            st.info(f"Sheet yang akan dibuat → OFF: {len(kd['off'])} orang | MASUK: {len(kd['on'])} orang | "
+                    f"R0 (tukar jam / tidak teratur): {sum(len(v) for v in kd['rest'].values())} baris | PERUBAHAN REGU")
         else:
             st.info(f'Sheet yang akan dibuat → R{rev} (semua perubahan dari R{rev - 1}) | PERUBAHAN REGU (bila ada)')
     t1, t2, t3 = st.tabs(['Perubahan jadwal', 'Perubahan regu', 'Saldo hari'])
@@ -337,10 +363,10 @@ if page == 'Buat Jadwal':
         st.session_state.pop('bk', None)
     o = st.session_state.get('out')
     if o and o['dept'] == dept and o['ym'] == ym and o['rev'] == rev:
-        st.success(f"R{o['rev']} sudah dibuat (belum disimpan ke riwayat). Klik salah satu tombol unduh, lalu pilih simpan ke riwayat atau tidak.")
+        st.success(f"R{o['rev']} sudah dibuat. Klik salah satu tombol unduh, lalu pilih simpan ke riwayat atau tidak.")
         d1, d2 = st.columns(2)
-        if d1.button('⬇️ Unduh Jadwal Kerja', use_container_width=True): review('jad')
-        if d2.button('⬇️ Unduh Informasi Perubahan Jadwal', type='primary', use_container_width=True): review('inf')
+        if d1.button('⬇️ Unduh Jadwal Kerja', use_container_width=True): open_review('jad')
+        if d2.button('⬇️ Unduh Informasi Perubahan Jadwal', type='primary', use_container_width=True): open_review('inf')
 
 # =====================================================================
 elif page == 'Riwayat':
@@ -372,10 +398,7 @@ elif page == 'Riwayat':
                    + ' Saldo kurang hari bulan itu dihitung ulang dari revisi yang tersisa.')
         if st.checkbox('Saya yakin ingin menghapus', key=f'delok_{d_}_{y_}_{r_}') and st.button('Hapus', key=f'del_{d_}_{y_}_{r_}'):
             store.delete_from(d_, y_, r_)
-            if backup.configured(secrets_obj()):
-                try: backup.push(store, secrets_obj(), list(DEPTS))
-                except Exception as e: st.error(f'Backup gagal: {e}')
-            st.rerun()
+            push_async(); st.rerun()
 
 # =====================================================================
 elif page == 'Potong Cuti':
@@ -404,10 +427,7 @@ elif page == 'Potong Cuti':
         st.caption(f'Sisa kurang hari setelah dipotong: **{cur - hari:g}** (sebelumnya {cur:g}).')
     if st.button('💾 Simpan potong cuti', type='primary', disabled=not ok):
         store.add_cuti(dept, ym, nik, led[nik]['nama'], tgl, hari, ket)
-        msg = 'Tersimpan.'
-        if backup.configured(secrets_obj()):
-            try: backup.push(store, secrets_obj(), list(DEPTS)); msg += ' Backup Google Sheets berhasil.'
-            except Exception as e: msg += f' (Backup Google Sheets gagal: {e})'
+        msg = 'Tersimpan.'; push_async()
         st.session_state['cuti_msg'] = msg; st.rerun()
     st.divider()
     st.subheader('Riwayat potong cuti')
@@ -423,10 +443,7 @@ elif page == 'Potong Cuti':
             pick = st.selectbox('Pilih catatan', log, format_func=lambda r: f"{r['nama']} | {r['tgl']} | {r['hari']:g} hari ({ym_label(r['ym'])})")
             if st.checkbox('Saya yakin ingin menghapus catatan ini') and st.button('Hapus catatan'):
                 store.delete_cuti(dept, pick['id'])
-                if backup.configured(secrets_obj()):
-                    try: backup.push(store, secrets_obj(), list(DEPTS))
-                    except Exception as e: st.error(f'Backup gagal: {e}')
-                st.rerun()
+                push_async(); st.rerun()
 
 # =====================================================================
 elif page == 'Saldo Hari':
@@ -461,11 +478,10 @@ else:
             for p in store.get_rev(r['dept'], r['ym'], r['rev'])['snapshot']['people']: names[p['nik']] = p['nama']
         rows = [dict(NIK=str(n), Nama=names.get(str(n), ''), Tim=ti + 1, No=oi + 1) for ti, t in enumerate(teams) for oi, n in enumerate(t)]
         ed = st.data_editor(pd.DataFrame(rows), num_rows='dynamic', use_container_width=True, hide_index=True, key='teams_ed')
-        pct = st.slider('Batas perubahan serentak (% orang) untuk sheet OFF / MASUK', 20, 100, int(pct_of(dept)))
         if st.button('Simpan susunan tim'):
             ed = ed.dropna(subset=['NIK', 'Tim']); ed['Tim'] = ed['Tim'].astype(int)
             nt = [[str(r.NIK) for r in g.sort_values('No').itertuples()] for _, g in sorted(ed.groupby('Tim'))]
-            store.set_setting(dept, 'teams', nt); store.set_setting(dept, 'bulk_pct', pct); st.success('Tersimpan.')
+            store.set_setting(dept, 'teams', nt); st.success('Tersimpan.')
         st.divider()
     st.subheader('Backup Google Sheets')
     if backup.configured(secrets_obj()):

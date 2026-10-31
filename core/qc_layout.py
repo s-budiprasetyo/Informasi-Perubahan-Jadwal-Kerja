@@ -20,26 +20,15 @@ def order_people(people, teams):
     return [[p for _, p in sorted(groups[t], key=lambda x: x[0])] for t in sorted(groups)]
 
 
-def split_bulk(plan, pct=50):
-    """-> (bulks, rest)
-    bulks: [dict(kind='off'|'on', date=int, niks=set)] tanggal di mana >= pct% orang
-           sama-sama X->OFF (atau OFF->X); rest: {nik: [[a,b,[tgl]],...]} sisa tidak teratur."""
-    n = len(plan['people']); need = max(5, math.ceil(n * pct / 100))
-    cnt = defaultdict(set)
+def split_kinds(plan):
+    """Pisahkan perubahan R0 menurut jenisnya (mengikuti form buatan manual):
+    off  = X -> OFF   -> sheet OFF   (tiap orang satu baris per tanggal/kelompok tanggal, tanggal boleh beda-beda)
+    on   = OFF -> X   -> sheet MASUK
+    rest = X -> Y (tukar kode jam, keduanya masuk) -> sheet R0 (tidak teratur)
+    Mengembalikan dict kind -> {nik: [[a,b,[tgl]],...]}."""
+    out = {'off': {}, 'on': {}, 'rest': {}}
     for p in plan['people']:
         for a, b, ds in p['ents']:
-            kind = 'off' if b == 'OFF' else 'on' if a == 'OFF' else None
-            if kind:
-                for d in ds: cnt[(kind, d)].add(p['nik'])
-    keys = sorted((k for k, v in cnt.items() if len(v) >= need), key=lambda k: (k[0] != 'off', k[1]))
-    bulks = [dict(kind=k, date=d, niks=cnt[(k, d)]) for k, d in keys]
-    kd = {(b['kind'], b['date']) for b in bulks}
-    rest = {}
-    for p in plan['people']:
-        out = []
-        for a, b, ds in p['ents']:
-            kind = 'off' if b == 'OFF' else 'on' if a == 'OFF' else None
-            left = [d for d in ds if (kind, d) not in kd]
-            if left: out.append([a, b, left])
-        if out: rest[p['nik']] = out
-    return bulks, rest
+            k = 'off' if b == 'OFF' else 'on' if a == 'OFF' else 'rest'
+            out[k].setdefault(p['nik'], []).append([a, b, list(ds)])
+    return out

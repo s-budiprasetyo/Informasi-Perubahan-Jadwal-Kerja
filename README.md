@@ -58,3 +58,8 @@ Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.
   - Memilih *Jadwal Kerja*: saat disimpan, selisih potong cuti dicatat sebagai "Penyesuaian dari Jadwal Kerja" dan saldo awal disamakan.
   - Memilih *historis*: file Jadwal Kerja hasil unduh diisi saldo awal / ganti hari / potong cuti dari aplikasi.
 - Unduh ulang dari Riwayat selalu mengisi kolom-kolom itu dari saldo tersimpan.
+
+## Aturan sheet QC (R0)
+- Sheet **OFF** = semua perubahan X → OFF, sheet **MASUK** = semua OFF → X; tiap orang satu baris dengan tanggalnya sendiri (tanggal boleh berbeda-beda), urutan mengikuti tim. Sheet **R0** hanya untuk tukar kode jam (X → Y) dan hanya dibuat bila ada. Sudah dicocokkan dengan form buatan manual (tests/fixtures/manual_qc_oktober.xlsx).
+- PERUBAHAN REGU: urutan mengikuti tim; bila lebih dari 23 orang dibagi dua halaman seimbang, nomor mulai 1 tiap halaman.
+- Jendela unduh menutup otomatis setelah tombol diklik; backup Google Sheets berjalan di latar belakang.

@@ -30,17 +30,15 @@ def test_detect_needs_decision_for_unknown_person():
 def test_r0_structure(tmp_path):
     plan, snap = r0()
     assert len(plan['people']) == 48 and sum(1 for p in plan['people'] if p['regu']) == 37
-    bulks, rest = qc_layout.split_bulk(plan, 50)
-    assert [(b['kind'], b['date'], len(b['niks'])) for b in bulks] == [('off', 9, 48), ('on', 24, 46)]
-    assert sorted(rest) == ['706', '774']
+    kd = qc_layout.split_kinds(plan)
+    assert len(kd['off']) == 48 and len(kd['on']) == 48 and not kd['rest']
     out = str(tmp_path / 'q.xlsx'); info = render('QC', plan, 0, datetime.date(2026, 10, 9), out)
     wb = openpyxl.load_workbook(out)
-    assert wb.sheetnames == ['OFF', 'MASUK', 'R0', 'PERUBAHAN REGU']
-    assert len(slots(wb['OFF'])) == 48 and len(slots(wb['MASUK'])) == 46 and len(slots(wb['R0'])) == 2
+    assert wb.sheetnames == ['OFF', 'MASUK', 'PERUBAHAN REGU']
+    assert len(slots(wb['OFF'])) == 48 and len(slots(wb['MASUK'])) == 48
     off = wb['OFF']
     assert {off.cell(r, 10).value for r in slots(off)} == {'9 Oktober 2026'}
     assert off['P3'].value == 'GRESIK, 9 Oktober 2026' and off['P8'].value == 'M. NUR MUSTHOFA'
-    assert wb['R0'].cell(12, 16).value == 'OFF' and wb['R0'].cell(12, 19).value == 'DSO2'
     reg = wb['PERUBAHAN REGU']
     assert len(slots(reg)) == 37 and reg['O3'].value == 'GRESIK, 9 Oktober 2026'
 
@@ -128,3 +126,29 @@ def test_r1_same_file_has_no_spurious_regu():
     p0, s0 = engine.compute(j, h['rows'], None, dec, None, DEPTS['QC'])
     p1, _ = engine.compute(j, h['rows'], s0, dec, None, DEPTS['QC'])
     assert any(p['regu'] for p in p0['people']) and not any(p['regu'] for p in p1['people'])
+
+
+def test_matches_manual_form(tmp_path):
+    """Hasil aplikasi harus sama isinya dengan form buatan manual (tiap sheet, tiap orang, urutan, nomor halaman)."""
+    import re
+    plan, _ = r0()
+    out = str(tmp_path / 'q.xlsx'); render('QC', plan, 0, datetime.date(2026, 10, 9), out)
+    man = os.path.join(os.path.dirname(__file__), 'fixtures', 'manual_qc_oktober.xlsx')
+
+    def dump(path):
+        wb = openpyxl.load_workbook(path); res = {}
+        for ws in wb:
+            rows = []
+            for r in range(1, ws.max_row + 1):
+                if isinstance(ws.cell(r, 1).value, int):
+                    rows.append([[re.sub(r'\s+', ' ', str(ws.cell(r + k, c).value).strip()) for c in range(1, 24) if ws.cell(r + k, c).value is not None] for k in (0, 1)])
+            res[ws.title] = rows
+        return res
+    a, b = dump(out), dump(man)
+    assert list(a) == list(b)
+    for k in a:
+        if k == 'PERUBAHAN REGU':   # isi sama; urutan/pembagian halaman boleh beda (di form manual dibagi tangan), nomor diabaikan
+            key = lambda rows: sorted(tuple(r[0][1:]) + tuple(r[1]) for r in rows)
+            assert key(a[k]) == key(b[k]) and len(a[k]) == 37
+        else:
+            assert a[k] == b[k], k
