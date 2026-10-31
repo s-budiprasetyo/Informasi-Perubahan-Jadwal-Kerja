@@ -123,7 +123,9 @@ class Sheet:
         rb = etree.Element(q('rowBreaks'))
         for i in ids: etree.SubElement(rb, q('brk'), id=str(i), max='22', man='1')
         rb.set('count', str(len(ids))); rb.set('manualBreakCount', str(len(ids)))
-        s.root.find(q('pageSetup')).addnext(rb)
+        # urutan skema OOXML: ... pageSetup, headerFooter, rowBreaks, ... drawing  (Excel menolak urutan lain)
+        hf = s.root.find(q('headerFooter'))
+        (hf if hf is not None else s.root.find(q('pageSetup'))).addnext(rb)
 
 
 def split_dates(ds, maxd, balanced):

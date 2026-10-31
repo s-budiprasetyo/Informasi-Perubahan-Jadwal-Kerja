@@ -89,7 +89,7 @@ def _list_sheet(W, D, pages, date_txt, BULAN, alasan):
             else: kind = 'xy'; v.update({('P', 0): show(a), ('P', 1): hrs(a), ('S', 0): show(b), ('S', 1): hrs(b)})
             s.filled(r0, kind, v, many)
     setcell(s.rows[3], 'P', date_txt)
-    s.finish(date_txt); s.set_breaks([PAGE * i for i in range(1, n)])
+    s.finish(date_txt); s.set_breaks([PAGE * i + (1 if i == 1 else 0) for i in range(1, n + 1)])    # sama dengan form manual: 53, 104, 156
     return (etree.tostring(s.tree, xml_declaration=True, encoding='UTF-8', standalone=True),
             _drawing_pages(D('drawing1.xml'), n), PAGE * n)
 
@@ -103,7 +103,15 @@ def _regu_sheet(W, D, people, regu_name, BULAN, date_txt, teams=None):
     if len(ps) > 46: raise ValueError('Form PERUBAHAN REGU hanya muat 46 orang (2 halaman).')
     # urutan mengikuti tim (halaman OFF/MASUK); bila lebih dari 23 orang dibagi dua halaman seimbang (mis. 37 -> 18 + 19), nomor mulai 1 tiap halaman
     ps = [p for t in (teams or []) for p in t if p['regu']] or ps
-    pages = [ps] if len(ps) <= 23 else [ps[:len(ps) // 2], ps[len(ps) // 2:]]
+    if len(ps) <= 23: pages = [ps]
+    else:
+        k = len(ps) // 2; pages = [ps[:k], ps[k:]]
+        tid = {p['nik']: ti for ti, t in enumerate(teams or []) for p in t}
+        if tid.get(ps[k - 1]['nik']) == tid.get(ps[k]['nik']):
+            # tim terbelah dua halaman: foreman tim (orang pertama tim itu) menjadi baris pertama halaman 2, seperti form manual
+            F = next((p for p in ps if tid.get(p['nik']) == tid.get(ps[k]['nik'])), None)
+            if F is not None and F in pages[0] and F is not ps[0]:
+                rest = [p for p in ps if p is not F]; pages = [rest[:k], [F] + rest[k:]]
     slots = []
     for pi, g in enumerate(pages):
         for k, p in enumerate(g): slots.append(((12 if pi == 0 else 69) + 2 * k, k + 1, p))

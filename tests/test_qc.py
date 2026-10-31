@@ -144,11 +144,41 @@ def test_matches_manual_form(tmp_path):
                     rows.append([[re.sub(r'\s+', ' ', str(ws.cell(r + k, c).value).strip()) for c in range(1, 24) if ws.cell(r + k, c).value is not None] for k in (0, 1)])
             res[ws.title] = rows
         return res
+    br = lambda path: {ws.title: [x.id for x in ws.row_breaks.brk] for ws in openpyxl.load_workbook(path)}
+    assert br(out) == br(man)       # pemotongan halaman cetak sama
     a, b = dump(out), dump(man)
     assert list(a) == list(b)
     for k in a:
-        if k == 'PERUBAHAN REGU':   # isi sama; urutan/pembagian halaman boleh beda (di form manual dibagi tangan), nomor diabaikan
-            key = lambda rows: sorted(tuple(r[0][1:]) + tuple(r[1]) for r in rows)
-            assert key(a[k]) == key(b[k]) and len(a[k]) == 37
+        if k == 'PERUBAHAN REGU':   # isi, urutan, dan pembagian halaman sama dengan form manual
+            assert a[k] == b[k] and len(a[k]) == 37
         else:
             assert a[k] == b[k], k
+
+
+ORDER = ['sheetPr', 'dimension', 'sheetViews', 'sheetFormatPr', 'cols', 'sheetData', 'sheetCalcPr', 'sheetProtection', 'protectedRanges', 'scenarios',
+         'autoFilter', 'sortState', 'dataConsolidate', 'customSheetViews', 'mergeCells', 'phoneticPr', 'conditionalFormatting', 'dataValidations',
+         'hyperlinks', 'printOptions', 'pageMargins', 'pageSetup', 'headerFooter', 'rowBreaks', 'colBreaks', 'customProperties', 'cellWatches',
+         'ignoredErrors', 'smartTags', 'drawing', 'legacyDrawing', 'legacyDrawingHF', 'picture', 'oleObjects', 'controls', 'webPublishItems', 'tableParts', 'extLst']
+
+
+def _check_order(path):
+    """Excel menolak file bila urutan elemen di sheet XML melanggar skema (pesan 'We found a problem with some content')."""
+    import zipfile
+    from lxml import etree
+    z = zipfile.ZipFile(path)
+    for n in z.namelist():
+        if n.startswith('xl/worksheets/sheet') and n.endswith('.xml'):
+            tags = [c.tag.split('}')[1] for c in etree.fromstring(z.read(n))]
+            idx = [ORDER.index(t) for t in tags]
+            assert idx == sorted(idx), (path, n, tags)
+
+
+def test_sheet_xml_element_order_valid(tmp_path):
+    plan, _ = r0()
+    out = str(tmp_path / 'q.xlsx'); render('QC', plan, 0, datetime.date(2026, 10, 9), out); _check_order(out)
+    p1 = tmp_path / 'q1.xlsx'
+    j1 = copy.deepcopy(jad)
+    for x in j1['people'][:30]:
+        x['days'][11] = 'OFF' if x['days'][11] != 'OFF' else 'DS04'
+    plan1, _ = engine.compute(j1, hrd['rows'], r0()[1], {}, None, cfg)
+    render('QC', plan1, 1, datetime.date(2026, 10, 20), str(p1)); _check_order(str(p1))
