@@ -150,11 +150,24 @@ def recap_from_ledger(dept, ym):
     return {r['nik']: dict(open=r['saldo_awal'], lebih=r.get('lebih') or 0, cuti=r.get('cuti') or 0) for r in store.get_ledger(dept, ym)}
 
 
+def recap_of(snap, bal_mode, bal_file):
+    """Isi kolom saldo di Jadwal Kerja hasil: seluruh isian (bila memilih data historis); selain itu hanya LAMA untuk
+    karyawan pindahan / baris yang saldonya kosong di file (mis. VLOOKUP ke file bulan lalu tidak menemukan nama)."""
+    if bal_mode == 'historis':
+        return {p['nik']: dict(open=p['awal'], cuti=p['cuti']) for p in snap['people']}
+    r = {}
+    for p in snap['people']:
+        f = bal_file.get(p['nik'])
+        if p.get('mover') or f is None or not f.get('has_awal', True): r[p['nik']] = dict(open=p['awal'])
+    return r
+
+
 def do_save():
     """Dipanggil saat pengguna memilih 'Simpan ke riwayat & unduh'. Satu-satunya tempat data masuk riwayat."""
     o = st.session_state['out']
     store.save_rev(o['dept'], o['ym'], o['rev'], o['plan'], o['snap'], o['basis'], o['jname'], o['hname'])
     if o['hrd_rows'] is not None: store.save_hrd(o['dept'], o['ym'], o['hrd_rows'])
+    if o.get('xhrd') and store.get_hrd(o['xhrd'][0], o['ym']) is None: store.save_hrd(o['xhrd'][0], o['ym'], o['xhrd'][1])
     store.save_decisions(o['dept'], o['ym'], o['decisions'])
     if o['rev'] == 0: store.set_setting(o['dept'], f"holidays:{o['ym']}", o['holidays'])
     if o['bal_mode'] == 'jadwal':        # data Jadwal Kerja yang dipilih -> samakan riwayat (isian awal & penyesuaian cuti tercatat)
@@ -230,12 +243,19 @@ if page == 'Buat Jadwal':
     stored_hrd = store.get_hrd(dept, ym)
     need_hrd = rev == 0 or stored_hrd is None
     b1, b2 = st.columns(2)
+    others = [d for d in DEPTS if d != dept]
     f_j = b1.file_uploader(f"① Jadwal Kerja {dept} (jadwal terapan lapangan)", type=['xlsx'], key=f'fj{dept}{ym}{rev}')
     if need_hrd:
         f_h = b2.file_uploader(f"② HRD - {cfg['hrd_hint']} (jadwal dasar)", type=['xlsx'], key=f'fh{dept}{ym}{rev}')
     else:
         f_h = None
         b2.info('② File HRD bulan ini sudah tersimpan - tidak perlu diunggah. Pembanding = revisi sebelumnya R%d.' % (rev - 1))
+    f_x = None
+    if need_hrd and rev == 0 and others:
+        f_x = st.file_uploader(f"③ (Opsional) HRD departemen lain - {DEPTS[others[0]]['hrd_hint']}; hanya untuk karyawan pindahan antar departemen",
+                               type=['xlsx'], key=f'fx{dept}{ym}{rev}',
+                               help='Dipakai untuk mencari PWS lama dan pola PWS karyawan yang pindah ke departemen ini. '
+                                    'Bila tidak diunggah, aplikasi memakai memori bulan lalu / HRD departemen itu yang pernah tersimpan.')
     if not f_j or (need_hrd and not f_h):
         st.stop()
 
@@ -256,7 +276,33 @@ if page == 'Buat Jadwal':
             st.error(f'Revisi R{rev - 1} belum tersimpan, jadi R{rev} tidak punya pembanding.'); st.stop()
         prev = r['snapshot']
 
-    anoms = engine.detect(jad, hrd_rows, prev, cfg)
+    # ---- memori karyawan lintas departemen (per NIK): pindahan antar departemen
+    x_rows = None
+    if f_x:
+        try:
+            xh = _ph(f_x.getvalue()); x_rows = xh['rows']
+            if xh['ym'] and xh['ym'] != ym: st.error(f"HRD departemen lain berisi bulan {xh['ym']}, bukan {ym}."); st.stop()
+        except Exception as e:
+            st.error(f'HRD departemen lain tidak terbaca: {e}'); st.stop()
+    prev_by_n = {p['nik'] for p in prev['people']} if prev else set()
+    xmem = dict(people={}, pat=dict(store.other_patterns(dept, ym)), moved_out={})
+    if x_rows:
+        for s_ in x_rows.values(): xmem['pat'].setdefault(s_['pws'], s_['days'])
+    for p_ in jad['people']:
+        n_ = p_['nik']
+        if n_ in prev_by_n or (hrd_rows and n_ in hrd_rows): continue
+        if x_rows and n_ in x_rows:
+            s_ = x_rows[n_]; xmem['people'][n_] = dict(pws=s_['pws'], nama=s_['nama'], dept=others[0], total=None, source='HRD departemen lain (unggahan)')
+        else:
+            m_ = store.person_memory(dept, ym, n_)
+            if m_: xmem['people'][n_] = m_
+    if hrd_rows and not prev:
+        jn = {p_['nik'] for p_ in jad['people']}
+        for n_ in hrd_rows:
+            if n_ not in jn:
+                m_ = store.person_memory(dept, ym, n_)
+                if m_ and m_['source'] != 'HRD' and m_['cur']: xmem['moved_out'][n_] = m_
+    anoms = engine.detect(jad, hrd_rows, prev, cfg, xmem)
     saved = store.get_decisions(dept, ym)
     ACT = ('pws_mismatch', 'hrd_only', 'jadwal_only')
     n_act = sum(1 for a in anoms if a['kind'] in ACT)
@@ -264,7 +310,7 @@ if page == 'Buat Jadwal':
     for a in anoms:
         if a['kind'] in ACT:
             decisions[a['nik']] = st.session_state.get(f"dec_{a['nik']}", saved.get(a['nik'], a.get('suggest', a.get('default', 'abaikan'))))
-    plan, snap = engine.compute(jad, hrd_rows, prev, decisions, None, cfg, holidays)
+    plan, snap = engine.compute(jad, hrd_rows, prev, decisions, None, cfg, holidays, xmem)
     # info selisih hari kerja di Jadwal vs target HRD (hanya informasi)
     sel = []
     for p in snap['people']:
@@ -297,6 +343,10 @@ if page == 'Buat Jadwal':
             with st.expander(f'Keputusan otomatis ({len(auto)})'):
                 for a in auto: st.caption(f"{a['nama']} ({a['nik']}): {a['msg']}")
     if todo: top[0].info(f'{len(todo)} nama perlu diputuskan di 🔔.')
+    mv = [a for a in anoms if a['kind'] == 'mover']
+    if mv: st.info('🔀 Karyawan pindahan dari departemen lain: ' + ', '.join(f"{a['nama']} (dari {a['dari']})" for a in mv))
+    mo = [a for a in anoms if a['kind'] == 'moved_out']
+    if mo: st.caption('Sudah pindah ke departemen lain (tidak dimasukkan): ' + ', '.join(f"{a['nama']} → {a['dari']}" for a in mo))
 
     # ---- saldo kurang/lebih hari: dibaca dari Jadwal Kerja; dibandingkan dengan riwayat aplikasi
     bal_file = _bal(f_j.getvalue(), cfg['kind'])
@@ -307,9 +357,11 @@ if page == 'Buat Jadwal':
         h_awal = store.opening_known(dept, ym, nik); h_cuti = store.cuti_sum(dept, ym, nik)
         h_lebih = (led_ym[nik].get('lebih') or 0) if nik in led_ym else None
         if f is None:
-            f = dict(awal=store.opening(dept, ym, nik), baru=p['kurang'], lebih=0.0, cuti=h_cuti, akhir=None)
+            f = dict(awal=store.opening(dept, ym, nik), baru=p['kurang'], lebih=0.0, cuti=h_cuti, akhir=None, has_awal=False)
             f['akhir'] = f['awal'] + f['baru'] - f['cuti']
         else:
+            if not f.get('has_awal', True):      # LAMA kosong/error di file (mis. pindahan): pakai riwayat aplikasi, bukan 0
+                f = dict(f, awal=store.opening(dept, ym, nik)); f['akhir'] = f['awal'] + f['baru'] - f['lebih'] - f['cuti']
             for lab, fv, hv in (('Saldo awal', f['awal'], h_awal), ('Lebih hari', f['lebih'], h_lebih), ('Potong cuti', f['cuti'], h_cuti)):
                 if hv is not None and abs(fv - hv) > 1e-9:
                     conf.append({'NIK': nik, 'Nama': p['nama'], 'Data': lab, 'Jadwal Kerja unggahan': fv, 'Historis aplikasi': hv})
@@ -360,8 +412,8 @@ if page == 'Buat Jadwal':
         st.session_state['out'] = dict(
             dept=dept, ym=ym, rev=rev, info=info, plan=plan, snap=snap, basis=basis, decisions=decisions, holidays=holidays,
             jname=f_j.name, jbytes=f_j.getvalue(), hname=f_h.name if f_h else '', hrd_rows=hrd_rows if f_h else None,
-            inf=(file_name(dept, ym, rev), data), jad=(jadwal_name(dept, ym, rev), make_jadwal(f_j.getvalue(), rev, gen, {p['nik']: dict(open=p['awal'], lebih=p['lebih'], cuti=p['cuti']) for p in snap['people']} if bal_mode == 'historis' else None)),
-            bal_mode=bal_mode, saved=False)
+            inf=(file_name(dept, ym, rev), data), jad=(jadwal_name(dept, ym, rev), make_jadwal(f_j.getvalue(), rev, gen, recap_of(snap, bal_mode, bal_file))),
+            bal_mode=bal_mode, saved=False, xhrd=(others[0], x_rows) if x_rows else None)
         st.session_state.pop('bk', None)
     o = st.session_state.get('out')
     if o and o['dept'] == dept and o['ym'] == ym and o['rev'] == rev:

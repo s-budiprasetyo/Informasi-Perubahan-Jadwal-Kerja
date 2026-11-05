@@ -68,3 +68,13 @@ Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.
 - Orang yang **ada di HRD** = karyawan lama: semua tanggal libur/masuk dibandingkan dengan jadwal HRD, termasuk tanggal 1 sampai tanggal ia mulai masuk (cocok dengan form manual SK Oktober).
 - Orang yang **tidak ada di HRD** (karyawan baru): libur sebelum tanggal masuk tidak dibuatkan perubahan (otomatis, tanpa pertanyaan).
 - Lonceng hanya memuat: orang di HRD yang tidak ada di Jadwal Kerja (pilih masukkan/abaikan), PWS lama karyawan baru, kode PWS yang tidak cocok, dan **info selisih hari kerja vs target HRD** (kurang/lebih n hari). Tanggal efektif regu dihitung otomatis (tidak ada isian).
+
+## Pindah departemen (QC ⇄ SK) dan format saldo baru
+
+- **NIK** dinormalkan tanpa nol di depan di semua pembaca dan penyimpanan (`0698` = `698`). Baris NIK ganda di Jadwal Kerja dibuang (yang berisi hari kerja dipertahankan).
+- **Memori karyawan lintas departemen** (per NIK) dibaca dari riwayat yang sudah disimpan: HRD departemen lain bulan ini, revisi terbaru bulan lalu, atau revisi terakhir bulan ini yang masih memuat namanya.
+- Orang yang ada di Jadwal Kerja tetapi tidak ada di HRD departemen ini, namun dikenali di departemen lain, ditandai **pindahan**: PWS lama dari departemen asal, jadwal sebelum tanggal pindah = jadwal lama, perubahan regu **hanya** di form departemen baru (tanggal efektif = hari pertama memakai kode PWS baru). Tidak masuk lonceng; tercatat di info "Karyawan pindahan".
+- R0: pindahan masih ada di departemen lama; R1/R2: hilang dari departemen lama (tidak dihitung dan tidak membuat peringatan) dan muncul di departemen baru. Di departemen lama, orang HRD yang sudah tercatat pindah tampil sebagai "Sudah pindah" (bukan lonceng).
+- **HRD departemen lain (opsional)** dapat diunggah pada R0 (③); tanpa unggahan dipakai HRD tersimpan / memori bulan lalu. Pola PWS departemen lain dipakai untuk membandingkan PWS lama.
+- **Saldo awal** pindahan = saldo akhir bulan lalu di departemen asal. Satu bulan penuh dihitung departemen baru.
+- **Kolom saldo format baru (AT–AW, SK = QC)**: AQ GANTI HARI = hari kerja − target (rumus, tidak ditimpa), AT LAMA, AU BARU, AV TOTAL, AW SISA. Aplikasi mengisi LAMA dari riwayat per NIK bagi pindahan / baris yang LAMA-nya kosong atau error (VLOOKUP ke file bulan lalu).

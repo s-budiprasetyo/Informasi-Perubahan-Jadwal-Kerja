@@ -1,6 +1,15 @@
 """Penyimpanan riwayat (SQLite) + ekspor/impor JSON untuk backup."""
 import sqlite3, json, os, datetime, threading
-from .consts import prev_ym
+from .consts import prev_ym, nn
+
+
+def _fix_people(d):
+    """Samakan NIK (tanpa nol di depan) pada data lama yang tersimpan."""
+    for k in ('people',):
+        for q in d.get(k, []) if isinstance(d, dict) else []:
+            if isinstance(q, dict) and q.get('nik') is not None: q['nik'] = nn(q['nik'])
+    return d
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS revisions(dept TEXT, ym TEXT, rev INTEGER, created TEXT, basis TEXT,
@@ -27,6 +36,15 @@ class Store:
         for col in ('cuti', 'lebih'):
             try: self.db.execute(f'ALTER TABLE ledger ADD COLUMN {col} REAL DEFAULT 0'); self.db.commit()
             except sqlite3.OperationalError: pass
+        self._normalize()
+
+    def _normalize(self):
+        """NIK pada tabel diseragamkan (tanpa nol di depan) supaya '0698' dan '698' dianggap orang yang sama."""
+        with self.lock:
+            self.db.create_function('nn', 1, nn)
+            for t in ('decisions', 'ledger', 'cuti', 'opening'):
+                self.db.execute(f'UPDATE OR REPLACE {t} SET nik = nn(nik) WHERE nik != nn(nik)')
+            self.db.commit()
 
     # ---- revisi
     def revs(self, dept, ym):
@@ -39,7 +57,7 @@ class Store:
     def get_rev(self, dept, ym, rev):
         r = self.db.execute('SELECT * FROM revisions WHERE dept=? AND ym=? AND rev=?', (dept, ym, rev)).fetchone()
         if not r: return None
-        return dict(r, plan=json.loads(r['plan']), snapshot=json.loads(r['snapshot']))
+        return dict(r, plan=_fix_people(json.loads(r['plan'])), snapshot=_fix_people(json.loads(r['snapshot'])))
 
     def save_rev(self, dept, ym, rev, plan, snapshot, basis, jadwal_file='', hrd_file=''):
         with self.lock:
@@ -75,7 +93,53 @@ class Store:
 
     def get_hrd(self, dept, ym):
         r = self.db.execute('SELECT data FROM hrd WHERE dept=? AND ym=?', (dept, ym)).fetchone()
-        return json.loads(r[0]) if r else None
+        if not r: return None
+        return self._fix_hrd(json.loads(r[0]))
+
+    @staticmethod
+    def _fix_hrd(rows):
+        out = {}
+        for k, v in rows.items():
+            n = nn(k); v = dict(v); v['nik'] = n; out[n] = v
+        return out
+
+    def latest_hrd(self, dept, ym):
+        """HRD tersimpan pada bulan itu, atau bulan terakhir sebelumnya (pola PWS departemen itu)."""
+        r = self.db.execute('SELECT ym,data FROM hrd WHERE dept=? AND ym<=? ORDER BY ym DESC LIMIT 1', (dept, ym)).fetchone()
+        return (r[0], self._fix_hrd(json.loads(r[1]))) if r else (None, None)
+
+    # ---- memori karyawan lintas departemen (per NIK)
+    def person_memory(self, dept, ym, nik):
+        """Jejak terakhir seorang karyawan di departemen lain (jadwal & PWS lama).
+        Urutan: HRD bulan ini -> revisi terbaru bulan lalu -> revisi terakhir bulan ini yang masih memuat namanya.
+        -> dict(pws, nama, dept, days, total, ym, source, cur) atau None."""
+        nik = nn(nik)
+        for od in [d for d in self.all_depts() if d != dept]:
+            h = self.get_hrd(od, ym)
+            if h and nik in h:
+                s = h[nik]; return dict(pws=s['pws'], nama=s['nama'], dept=od, days=s['days'], total=s.get('total'), ym=ym, source='HRD', cur=True)
+        best = None
+        for od in [d for d in self.all_depts() if d != dept]:
+            for y in (prev_ym(ym), ym):
+                for rv in reversed(self.revs(od, y)):
+                    q = {nn(p['nik']): p for p in self.get_rev(od, y, rv)['snapshot']['people']}.get(nik)
+                    if q:
+                        c = dict(pws=q['pws'], nama=q.get('nama_hrd') or q['nama'], dept=od, days=q['days'], total=q.get('target'),
+                                 ym=y, source=f'revisi R{rv} {y}', cur=(y == ym))
+                        if best is None or (y, ) >= (best['ym'], ): best = c
+                        break
+        return best
+
+    def all_depts(self):
+        return sorted({r[0] for r in self.db.execute('SELECT DISTINCT dept FROM revisions UNION SELECT DISTINCT dept FROM hrd')})
+
+    def other_patterns(self, dept, ym):
+        """Pola PWS dari HRD departemen lain (bulan terakhir yang tersimpan)."""
+        pat = {}
+        for od in [d for d in self.all_depts() if d != dept]:
+            _, h = self.latest_hrd(od, ym)
+            for s in (h or {}).values(): pat.setdefault(s['pws'], s['days'])
+        return pat
 
     # ---- keputusan lonceng
     def save_decisions(self, dept, ym, dec):
@@ -89,20 +153,30 @@ class Store:
 
     # ---- saldo hari (kurang/lebih)
     def set_opening(self, dept, ym, nik, saldo):
+        nik = nn(nik)
         self.db.execute('INSERT OR REPLACE INTO opening VALUES(?,?,?,?)', (dept, ym, nik, saldo)); self.db.commit()
 
     def opening(self, dept, ym, nik):
+        nik = nn(nik)
         r = self.db.execute('SELECT saldo FROM opening WHERE dept=? AND ym=? AND nik=?', (dept, ym, nik)).fetchone()
         if r: return r[0]
         r = self.db.execute('SELECT saldo_akhir FROM ledger WHERE dept=? AND ym=? AND nik=?', (dept, prev_ym(ym), nik)).fetchone()
-        return r[0] if r else 0
+        if r: return r[0]
+        x = self._other_dept_saldo(dept, ym, nik)
+        return x if x is not None else 0
+
+    def _other_dept_saldo(self, dept, ym, nik):
+        """Karyawan pindahan: saldo akhir bulan lalu di departemen asal."""
+        r = self.db.execute('SELECT saldo_akhir FROM ledger WHERE dept!=? AND ym=? AND nik=? ORDER BY dept LIMIT 1', (dept, prev_ym(ym), nik)).fetchone()
+        return r[0] if r else None
 
     def opening_known(self, dept, ym, nik):
         """Saldo awal dari riwayat (isian manual atau saldo akhir bulan sebelumnya); None bila belum ada riwayat."""
+        nik = nn(nik)
         r = self.db.execute('SELECT saldo FROM opening WHERE dept=? AND ym=? AND nik=?', (dept, ym, nik)).fetchone()
         if r: return r[0]
         r = self.db.execute('SELECT saldo_akhir FROM ledger WHERE dept=? AND ym=? AND nik=?', (dept, prev_ym(ym), nik)).fetchone()
-        return r[0] if r else None
+        return r[0] if r else self._other_dept_saldo(dept, ym, nik)
 
     def save_ledger(self, dept, ym, snapshot):
         """Per orang: saldo_awal, kurang (baru), lebih hari, potong cuti; saldo_akhir = awal + kurang - lebih - cuti
@@ -125,6 +199,7 @@ class Store:
 
     # ---- potong cuti
     def add_cuti(self, dept, ym, nik, nama, tgl, hari, ket=''):
+        nik = nn(nik)
         with self.lock:
             self.db.execute('INSERT INTO cuti(dept,nik,nama,tgl,hari,ket,ym) VALUES(?,?,?,?,?,?,?)', (dept, nik, nama, str(tgl), float(hari), ket, ym))
             self.db.commit()
@@ -138,6 +213,7 @@ class Store:
         self.recalc_ledgers(dept, r[0])
 
     def cuti_sum(self, dept, ym, nik):
+        nik = nn(nik)
         r = self.db.execute('SELECT COALESCE(SUM(hari),0) FROM cuti WHERE dept=? AND ym=? AND nik=?', (dept, ym, nik)).fetchone()
         return r[0] or 0
 
@@ -181,6 +257,7 @@ class Store:
                     self.db.execute(f'INSERT OR REPLACE INTO {t}({",".join(cols)}) VALUES({",".join("?" * len(cols))})',
                                     [row[c] for c in cols])
             self.db.commit()
+        self._normalize()
 
     # ---- berkas Jadwal Kerja yang diunggah (lokal saja; terlalu besar untuk backup Sheets)
     def save_file(self, dept, ym, rev, name, blob):

@@ -4,7 +4,7 @@ import io, re, zipfile
 from openpyxl.utils import get_column_letter, column_index_from_string
 import openpyxl
 from lxml import etree
-from .consts import BULAN_ID
+from .consts import BULAN_ID, nn
 
 NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 RNS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
@@ -27,20 +27,22 @@ def _locate(data):
 def _recap_map(data, title):
     """Cari kolom 'POTONG CUTI'/'POT CUTI' & kolom saldo bulan lalu ('KRNG. HARI ...'/'LAMA'), serta baris tiap NIK."""
     wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
-    ws = wb[title]; cuti = open_ = lebih = None; nik_col = hdr = None
+    ws = wb[title]; cuti = open_ = lebih = None; nik_col = hdr = None; new_layout = False
     for row in ws.iter_rows(min_row=1, max_row=14):
         for c in row:
             v = str(c.value or '').strip().upper()
             if cuti is None and v in ('POTONG CUTI', 'POT CUTI'): cuti = c.column
             if open_ is None and (v.startswith('KRNG. HARI') or v.startswith('KRNG HARI') or v == 'LAMA'): open_ = c.column
             if lebih is None and v.startswith('GANTI HARI'): lebih = c.column
+            if v == 'TOTAL HARI KERJA': new_layout = True
             if nik_col is None and 'PRN SAP' in v: nik_col, hdr = c.column, c.row
     rows = {}
     if nik_col:
         for r in ws.iter_rows(min_row=hdr + 1, min_col=nik_col, max_col=nik_col):
-            c = r[0]; v = re.sub(r'\D', '', str(c.value or ''))
+            c = r[0]; v = nn(c.value)
             if v and v not in rows: rows[v] = c.row
-    return cuti, open_, rows, lebih
+    # tata letak baru: GANTI HARI (AQ) berisi rumus hari kerja - target, jangan ditimpa
+    return cuti, open_, rows, (None if new_layout else lebih)
 
 
 def _setnum(root, ref, val):
@@ -97,7 +99,7 @@ def make_jadwal(data, rev, gen_date, recap=None):
     if recap:
         cuti_c, open_c, rows, lebih_c = _recap_map(data, title)
         for nik, rc in recap.items():
-            r = rows.get(str(nik))
+            r = rows.get(nn(nik))
             if not r: continue
             for c, k in ((cuti_c, 'cuti'), (open_c, 'open'), (lebih_c, 'lebih')):
                 if c and rc.get(k) is not None: _setnum(root, f'{get_column_letter(c)}{r}', rc[k])

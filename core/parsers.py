@@ -1,7 +1,7 @@
 """Pembaca file: Jadwal Kerja SK (lapangan) dan HRD '25. Shuttle Kiln 1'."""
 import re, warnings
 import openpyxl
-from .consts import norm, parse_month_text, month_len
+from .consts import norm, nn, parse_month_text, month_len
 
 warnings.filterwarnings('ignore')
 
@@ -56,14 +56,19 @@ def parse_jadwal(f):
         nama = ws.cell(row, c_nama).value
         if str(nama or '').strip().upper().startswith('KETERANGAN'):
             break
-        nik = str(ws.cell(row, c_nik).value or '').strip()
-        if not nama or not nik.isdigit():
+        raw = str(ws.cell(row, c_nik).value or '').strip()
+        if raw.endswith('.0'): raw = raw[:-2]
+        nik = nn(raw)
+        if not nama or not raw.isdigit() or not nik:
             continue
         days = [norm(ws.cell(row, c).value) for c in range(c_day, c_day + nd)]
-        people.append(dict(no=ws.cell(row, c_no).value if c_no else None, nama=str(nama).strip(), nik=nik,
-                           item=ws.cell(row, c_item).value if c_item else None,
-                           seksi=str(ws.cell(row, c_seksi).value or '').strip().upper() if c_seksi else '',
-                           pws=str(ws.cell(row, c_pws).value or '').strip(), days=days))
+        rec = dict(no=ws.cell(row, c_no).value if c_no else None, nama=str(nama).strip(), nik=nik,
+                   item=ws.cell(row, c_item).value if c_item else None,
+                   seksi=str(ws.cell(row, c_seksi).value or '').strip().upper() if c_seksi else '',
+                   pws=str(ws.cell(row, c_pws).value or '').strip(), days=days)
+        dup = next((i for i, q in enumerate(people) if q['nik'] == nik), None)
+        if dup is None: people.append(rec)
+        elif sum(x != 'OFF' for x in days) > sum(x != 'OFF' for x in people[dup]['days']): people[dup] = rec   # NIK ganda: simpan yang berisi
     return dict(ym=ym, target=target, people=people)
 
 
@@ -83,7 +88,8 @@ def parse_hrd(f):
         nik = ws.cell(r, 1).value
         if nik is None or str(nik).strip() == '':
             continue
-        nik = str(nik).strip()
+        nik = nn(nik)
+        if not nik: continue
         total = ws.cell(r, tot_col).value if tot_col else None
         rows[nik] = dict(nik=nik, dept=ws.cell(r, 2).value, nama=str(ws.cell(r, 3).value or '').strip(),
                          pws=str(ws.cell(r, 4).value or '').strip(),

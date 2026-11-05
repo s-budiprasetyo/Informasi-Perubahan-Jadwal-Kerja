@@ -171,7 +171,7 @@ def test_jadwal_recap_fills_cuti_column():
 def test_read_balances_from_jadwal():
     from core.sheetbal import read_balances
     q = read_balances(open(A + '5fbf0280-JADWAL_KERJA_OKTOBER_QC.xlsx', 'rb').read(), 'qc')
-    assert q['23'] == dict(awal=2, baru=0, lebih=0, cuti=0, akhir=2) and q['416']['akhir'] == 2 and q['136']['akhir'] == 0
+    assert {k: v for k, v in q['23'].items() if k != 'has_awal'} == dict(awal=2, baru=0, lebih=0, cuti=0, akhir=2) and q['416']['akhir'] == 2 and q['136']['akhir'] == 0
     s = read_balances(open(A + 'dddeacc0-JADWAL_KERJA_SK.xlsx', 'rb').read(), 'sk')
     assert s['1047']['baru'] == 1 and s['1047']['akhir'] == 1
 

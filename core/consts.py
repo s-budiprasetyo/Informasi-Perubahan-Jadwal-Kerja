@@ -25,6 +25,12 @@ ORDER = [('DS04', 'OFF'), ('DS02', 'OFF'), ('P004', 'OFF'), ('S005', 'OFF'),
          ('S005', 'DS02'), ('P004', 'DS02'), ('DS02', 'DS04'), ('DS04', 'DS02')]
 
 
+def nn(v):
+    """Normalisasi NIK: hanya angka, tanpa nol di depan ('0698' == 698 == '698')."""
+    s = re.sub(r'\D', '', str(v if v is not None else ''))
+    return s.lstrip('0')
+
+
 def norm(v):
     """Normalisasi kode jam kerja: kosong/IOFF -> OFF, DSO4 -> DS04."""
     if v is None or str(v).strip() == '':

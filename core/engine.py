@@ -76,18 +76,38 @@ def _same_pws(a, b):
     return n(a) == n(b)
 
 
-def detect(jad, hrd_rows, prev=None, cfg=None):
+def _xpeople(xmem, pat):
+    """Karyawan pindahan yang pola PWS lamanya bisa dipakai: {nik: info}."""
+    out = {}
+    for nik, x in ((xmem or {}).get('people') or {}).items():
+        if x.get('pws') and ensure_pat(pat, x['pws']): out[nik] = x
+    return out
+
+
+def _with_xpat(pat, xmem):
+    for k, v in ((xmem or {}).get('pat') or {}).items(): pat.setdefault(k, v)
+    return pat
+
+
+def detect(jad, hrd_rows, prev=None, cfg=None, xmem=None):
     """Daftar anomali (independen dari keputusan pengguna) untuk panel lonceng."""
     nd = month_len(jad['ym'])
     cfg = cfg or {}
-    pat = patterns(hrd_rows) if hrd_rows else {}
+    pat = _with_xpat(patterns(hrd_rows) if hrd_rows else {}, xmem)
     for p in jad['people']: ensure_pat(pat, p['pws'])
+    xp = _xpeople(xmem, pat)
     out = []
     niks = {p['nik'] for p in jad['people']}
     prev_by = {p['nik']: p for p in prev['people']} if prev else {}
     for p in jad['people']:
         nik = p['nik']
         s = hrd_rows.get(nik) if hrd_rows else None
+        if nik not in prev_by and not s and nik in xp:
+            x = xp[nik]
+            out.append(dict(kind='mover', nik=nik, nama=p['nama'], pws=p['pws'], dari=x['dept'],
+                            msg=f"Pindahan dari departemen {x['dept']} (PWS lama {x['pws']}, sumber: {x.get('source', '-')}). "
+                                'Jadwal sebelum tanggal pindah = jadwal lama; perubahan regu hanya di form departemen ini.'))
+            continue
         if nik not in prev_by and not s:
             out.append(dict(kind='jadwal_only', nik=nik, nama=p['nama'], pws=p['pws'], default=cfg.get('new_person_pws', '(pilih)'),
                             options=['(pilih)', 'abaikan'] + sorted(k for k in pat if not k.startswith('4G')),
@@ -130,6 +150,11 @@ def detect(jad, hrd_rows, prev=None, cfg=None):
     if hrd_rows and not prev:
         for nik, s in hrd_rows.items():
             if nik not in niks:
+                x = ((xmem or {}).get('moved_out') or {}).get(nik)
+                if x:
+                    out.append(dict(kind='moved_out', nik=nik, nama=s['nama'], dari=x['dept'],
+                                    msg=f"Sudah tercatat di departemen {x['dept']} bulan ini (pindah departemen) - diabaikan di sini."))
+                    continue
                 out.append(dict(kind='hrd_only', nik=nik, nama=s['nama'], pws=s['pws'],
                                 options=['abaikan', 'SK', 'QCSK'] if cfg.get('kind', 'sk') == 'sk' else ['abaikan', 'masukkan'],
                                 msg=f"Ada di HRD (PWS {s['pws']}) tetapi tidak ada di Jadwal Kerja."))
@@ -137,11 +162,11 @@ def detect(jad, hrd_rows, prev=None, cfg=None):
         for nik, q in prev_by.items():
             if nik not in niks:
                 out.append(dict(kind='removed', nik=nik, nama=q['nama'],
-                                msg='Ada di revisi sebelumnya tetapi tidak ada di file baru.'))
+                                msg='Ada di revisi sebelumnya tetapi tidak ada di file baru (pindah departemen atau keluar).'))
     return out
 
 
-def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, holidays=None):
+def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, holidays=None, xmem=None):
     """-> (plan, snapshot).  decisions: {nik: value, 'start:nik': 'ya'|'tidak'}; tgl_over: {nik: int};
     holidays: tanggal hari nasional (libur serentak; hanya berlaku di R0)."""
     decisions = decisions or {}
@@ -150,8 +175,9 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
     holidays = sorted({int(h) for h in (holidays or [])})
     exempt_pws = tuple(cfg.get('exempt_pws', ('05D035',)))
     ym = jad['ym']; nd = month_len(ym)
-    pat = patterns(hrd_rows) if hrd_rows else {}
+    pat = _with_xpat(patterns(hrd_rows) if hrd_rows else {}, xmem)
     for p in jad['people']: ensure_pat(pat, p['pws'])
+    xp = _xpeople(xmem, pat)
     prev_by = {p['nik']: p for p in prev['people']} if prev else {}
     people_in = list(jad['people'])
     niks = {p['nik'] for p in people_in}
@@ -167,10 +193,13 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
         nik = j['nik']; act = j['days'][:nd]
         s = hrd_rows.get(nik) if hrd_rows else None
         d = decisions.get(nik)
-        synthetic = False
+        synthetic = False; mover = None
+        if not s and not (prev and nik in prev_by) and nik in xp:
+            x = xp[nik]; mover = x['dept']        # pindahan: PWS lama dari departemen asal; target mengikuti bulan ini
+            s = dict(pws=x['pws'], nama=x.get('nama') or j['nama'], total=None, dept=x['dept'])
         if not s and not (prev and nik in prev_by) and d in pat:
             s = dict(pws=d, nama=j['nama'], total=None, dept=None); synthetic = True   # PWS lama dipilih pengguna
-        new = d if (d in pat and not synthetic and not (prev and nik in prev_by)) else j['pws']
+        new = d if (d in pat and not synthetic and not mover and not (prev and nik in prev_by)) else j['pws']
         regu = None; exempt = False; in_prev = bool(prev and nik in prev_by); hol_cut = 0
         if prev and nik in prev_by:
             q = prev_by[nik]
@@ -203,14 +232,15 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
         ents = order_entries(diffs(base, act))
         nama_hrd = s['nama'] if s else (prev_by[nik]['nama_hrd'] if nik in prev_by else j['nama'])
         plan_people.append(dict(nik=nik, nama=j['nama'], nama_hrd=nama_hrd, seksi=j['seksi'], pws=new,
-                                pws_lama=old, ents=ents, regu=regu, exempt=exempt))
+                                pws_lama=old, ents=ents, regu=regu, exempt=exempt, mover=mover))
         if in_prev:
             target = prev_by[nik].get('target') or jad.get('target') or 22     # target bulan ini dibawa dari revisi sebelumnya
         else:
             target = ((s or {}).get('total') or jad.get('target') or 22) - hol_cut
         worked = sum(1 for x in act if x != 'OFF')
         snap_people.append(dict(nik=nik, nama=j['nama'], nama_hrd=nama_hrd, seksi=j['seksi'], pws=new,
-                                days=act, exempt=exempt, target=target, worked=worked, kurang=target - worked))
+                                days=act, exempt=exempt, target=target, worked=worked, kurang=target - worked,
+                                mover=mover or (prev_by.get(nik) or {}).get('mover')))
     pending = [p['nik'] for p in jad['people'] if decisions.get(p['nik']) == '(pilih)']
     plan = dict(ym=ym, people=plan_people, skipped=skipped, pending=pending, holidays=holidays, starts=starts)
     snap = dict(ym=ym, people=snap_people)

@@ -10,6 +10,7 @@ saldo akhir = saldo awal + kurang baru - lebih hari - potong cuti  (QC memakai n
 """
 import io, re
 import openpyxl
+from .consts import nn
 
 
 def _num(v):
@@ -33,16 +34,23 @@ def read_balances(data, kind):
                 elif v.startswith('GANTI HARI') and 'lebih' not in col: col['lebih'] = c.column
                 elif v in ('POTONG CUTI', 'POT CUTI') and 'cuti' not in col: col['cuti'] = c.column
                 elif v == 'SISA' and 'sisa' not in col: col['sisa'] = c.column
+                elif v == 'TOTAL HARI KERJA' and 'total' not in col: col['total'] = c.column
         if not nik_col or not ({'awal', 'lebih', 'cuti'} & set(col)): continue
         out = {}
         for r in range(hdr + 1, ws.max_row + 1):
-            nik = re.sub(r'\D', '', str(ws.cell(r, nik_col).value or ''))
+            nik = nn(ws.cell(r, nik_col).value)
             if not nik or nik in out: continue
             g = lambda k: _num(ws.cell(r, col[k]).value) if k in col else 0.0
             awal, lebih, cuti = g('awal'), g('lebih'), g('cuti')
-            baru = g('baru') if kind == 'qc' else g('an')
+            if 'total' in col and 'sisa' in col:
+                # Tata letak baru (SK dan QC sama): GANTI HARI = hari kerja - target (bertanda, rumus), BARU = tambahan manual,
+                # SISA = LAMA + BARU - POT CUTI - GANTI HARI.  Kurang bulan ini = -GANTI HARI + BARU; 'lebih' sudah ada di dalamnya.
+                baru = g('baru') - lebih; lebih = 0.0
+            else:                                    # tata letak lama
+                baru = g('baru') if kind == 'qc' else g('an')
             akhir = awal + baru - lebih - cuti
-            if kind == 'qc' and 'sisa' in col and ws.cell(r, col['sisa']).value is not None: akhir = g('sisa')
-            out[nik] = dict(awal=awal, baru=baru, lebih=lebih, cuti=cuti, akhir=akhir)
+            if 'sisa' in col and ws.cell(r, col['sisa']).value is not None and ('total' in col or kind == 'qc'): akhir = g('sisa')
+            has = 'awal' in col and isinstance(ws.cell(r, col['awal']).value, (int, float)) and not isinstance(ws.cell(r, col['awal']).value, bool)
+            out[nik] = dict(awal=awal, baru=baru, lebih=lebih, cuti=cuti, akhir=akhir, has_awal=has)
         return out
     return {}
