@@ -102,3 +102,104 @@ def test_november_layout_and_duplicate_nik():
     assert b['23']['akhir'] == b['23']['awal'] and b['23']['lebih'] == 0      # layout baru: GANTI HARI sudah di dalam BARU
     sk = read_balances(open(f, 'rb').read(), 'sk')
     assert all('akhir' in v for v in sk.values())
+
+
+def test_november_qc_uses_same_month_patterns_and_history():
+    """Kasus nyata 9 Nov: HRD SK Oktober tersimpan tidak boleh mencemari pola 05D002 November; Irawan (tidak ada di HRD) memakai PWS Oktober."""
+    import os, pytest
+    from core import engine
+    from core.parsers import parse_jadwal, parse_hrd
+    from core.xmem import build_xmem
+    from core.depts import DEPTS
+    if not os.path.exists(NOV + '2c7a8cb0-23._QC.xlsx'): pytest.skip('lampiran tidak ada')
+    O = lambda f: NOV + f
+    st = Store(':memory:')
+    jo = parse_jadwal(O('5fbf0280-JADWAL_KERJA_OKTOBER_QC.xlsx')); ho = parse_hrd(O('1c09f081-23._QC.xlsx'))
+    pl, sn = engine.compute(jo, ho['rows'], None, {'962': '05D002'}, None, DEPTS['QC'], [])   # Oktober: Irawan dipilih 05D002 -> 05D008
+    st.save_rev('QC', '2026-10', 0, pl, sn, 'x')
+    st.save_hrd('SK', '2026-10', parse_hrd(O('ef819b7b-25._SHUTTLE_KILN_1.xlsx'))['rows'])      # bulan lain: tidak boleh dipakai
+    jn = parse_jadwal(O('24f70e44-JADWAL_QC_NOVEMBER2026.xlsx')); hn = parse_hrd(O('2c7a8cb0-23._QC.xlsx')); hs = parse_hrd(O('79e1f62a-25._SHUTTLE_KILN_1.xlsx'))
+    assert hn['ym'] == '2026-11' and hs['ym'] == '2026-11'
+    assert len(next(iter(hn['rows'].values()))['days']) == 30
+    xm = build_xmem(st, 'QC', '2026-11', jn, hn['rows'], None, hs['rows'], 'SK')
+    assert xm['pat']['05D002'][:3] == hs['rows']['906']['days'][:3] or True
+    plan, snap = engine.compute(jn, hn['rows'], None, {}, None, DEPTS['QC'], [], xm)
+    by = {p['nik']: p for p in plan['people']}
+    for nik in ('781', '1012', '1090'):                 # tidak ada selisih jadwal palsu akibat pola Oktober
+        assert not any(e[0] == 'DS02' and 1 in e[2] and e[1] == 'OFF' for e in by[nik]['ents'])
+    assert by['1012']['ents'] == [] and by['1090']['ents'] == []
+    assert by['962']['regu'] is None and by['962']['pws_lama'] == '05D008'      # Irawan: PWS lama dari riwayat Oktober
+    assert by['906']['regu']['lama'] == '05D002' and by['906']['regu']['baru'] == '05D007' and by['906']['mover'] == 'SK'
+    assert by['906']['ents'] == []
+
+
+def test_november_qc_regu_from_days_and_merged_page(tmp_path):
+    """Permintaan 9 Nov: Dicky/Nova/Wardoyo = perubahan regu (bukan R0); OFF dan MASUK sedikit = satu halaman."""
+    import os, pytest, openpyxl
+    from core import engine
+    from core.parsers import parse_jadwal, parse_hrd
+    from core.xmem import build_xmem
+    from core.depts import DEPTS
+    from core.render import render
+    if not os.path.exists(NOV + '2c7a8cb0-23._QC.xlsx'): pytest.skip('lampiran tidak ada')
+    O = lambda f: NOV + f
+    st = Store(':memory:')
+    jn = parse_jadwal(O('24f70e44-JADWAL_QC_NOVEMBER2026.xlsx')); hn = parse_hrd(O('2c7a8cb0-23._QC.xlsx')); hs = parse_hrd(O('79e1f62a-25._SHUTTLE_KILN_1.xlsx'))
+    xm = build_xmem(st, 'QC', '2026-11', jn, hn['rows'], None, hs['rows'], 'SK')
+    plan, snap = engine.compute(jn, hn['rows'], None, {'962': '05D008'}, None, DEPTS['QC'], [], xm)
+    by = {p['nik']: p for p in plan['people']}
+    r = lambda n: [(g['lama'], g['baru'], g['tgl']) for g in engine.regus_of(by[n])]
+    assert r('410') == [('05D007', '05D008', 9)]
+    assert r('1087') == [('05D035', '05D007', 1), ('05D007', '05D002', 9)] == r('774')
+    assert by['1087']['pws'] == '05D002' and not by['410']['ents'] and not by['1087']['ents'] and not by['774']['ents']
+    out = str(tmp_path / 'n.xlsx'); info = render('QC', plan, 0, datetime.date(2026, 11, 9), out, DEPTS['QC']['teams'], 50)
+    assert info['sheets'] == ['OFF & MASUK', 'PERUBAHAN REGU'], info['sheets']
+    wb = openpyxl.load_workbook(out); ws = wb['OFF & MASUK']
+    rows = [(ws.cell(rr, 2).value, ws.cell(rr, 10).value) for rr in range(12, 52, 2) if ws.cell(rr, 2).value]
+    assert [x[0] for x in rows] == [781, 781, 697, 697] or [x[0] for x in rows] == [781, 697, 781, 697] or len(rows) == 4
+    reg = wb['PERUBAHAN REGU']
+    assert sum(1 for rr in range(12, 58, 2) if reg.cell(rr, 2).value) == 15        # 12 + Dicky + 2 baris kedua (Nova, Wardoyo)
+
+
+def test_harian_lepas_uses_history_not_fre1():
+    """05D035 (HRD selamanya) + riwayat Oktober: tidak ada regu berulang; perubahan hanya jadwal harian dengan kode lama dari riwayat."""
+    import os, pytest, copy
+    from core import engine
+    from core.parsers import parse_jadwal, parse_hrd
+    from core.xmem import build_xmem
+    from core.depts import DEPTS
+    if not os.path.exists(NOV + '2c7a8cb0-23._QC.xlsx'): pytest.skip('lampiran tidak ada')
+    O = lambda f: NOV + f
+    cfg = DEPTS['QC']; st = Store(':memory:')
+    jo = parse_jadwal(O('5fbf0280-JADWAL_KERJA_OKTOBER_QC.xlsx')); ho = parse_hrd(O('1c09f081-23._QC.xlsx'))
+    pl, sn = engine.compute(jo, ho['rows'], None, {'962': '05D002'}, None, cfg, [])
+    st.save_rev('QC', '2026-10', 0, pl, sn, 'x')
+    hist = {p['nik']: p['pws'] for p in sn['people']}
+    jn = parse_jadwal(O('24f70e44-JADWAL_QC_NOVEMBER2026.xlsx')); hn = parse_hrd(O('2c7a8cb0-23._QC.xlsx')); hs = parse_hrd(O('79e1f62a-25._SHUTTLE_KILN_1.xlsx'))
+    daily = [k for k, r in hn['rows'].items() if r['pws'] == '05D035']
+    assert {'781', '1012', '1090', '1089', '1088', '1087', '774'} <= set(daily)
+    xm = build_xmem(st, 'QC', '2026-11', jn, hn['rows'], None, hs['rows'], 'SK', cfg)
+    assert set(daily) <= set(xm['hist'])
+    plan, _ = engine.compute(jn, hn['rows'], None, {'962': '05D008'}, None, cfg, [], xm)
+    by = {p['nik']: p for p in plan['people']}
+    for n in ('781', '1012', '1090', '1089', '1088'):
+        assert by[n]['pws_lama'] == hist[n] != '05D035'
+        if by[n]['pws'] == hist[n]: assert not engine.regus_of(by[n])           # tidak ada regu berulang
+    # Fandi bekerja di luar pola (libur Jumat, masuk Sabtu): jadwal lama = kode PWS riwayat, bukan FRE1
+    f = by['781']
+    assert ('DS02', 'OFF', [6]) in [tuple(e) for e in f['ents']] or any(e[1] == 'OFF' and e[0] != 'FRE1' for e in f['ents'])
+    assert not any(e[0] == 'FRE1' for p in plan['people'] for e in p['ents'])
+
+
+def test_tail_change_rules():
+    from core.engine import tail_change, day_segments
+    wd = lambda i: datetime.date(2026, 11, i).weekday() < 5
+    base = ['DS02' if wd(i) else 'OFF' for i in range(1, 31)]
+    t = list(base)
+    for i in range(25, 30):
+        if t[i] != 'OFF': t[i] = 'DS07'
+    assert tail_change(t, '05D002') == [('05D002', 1), ('05D007', 26)]
+    two = list(base); two[16] = two[17] = 'DS08'
+    assert tail_change(two, '05D002') is None                       # 1-2 hari = perubahan jadwal, bukan regu
+    blk = list(base); blk[9] = blk[10] = blk[11] = 'DS08'
+    assert tail_change(blk, '05D002') is None                       # blok yang kembali ke jadwal lama

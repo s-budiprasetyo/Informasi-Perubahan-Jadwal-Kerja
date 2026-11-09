@@ -78,3 +78,17 @@ Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.
 - **HRD departemen lain (opsional)** dapat diunggah pada R0 (③); tanpa unggahan dipakai HRD tersimpan / memori bulan lalu. Pola PWS departemen lain dipakai untuk membandingkan PWS lama.
 - **Saldo awal** pindahan = saldo akhir bulan lalu di departemen asal. Satu bulan penuh dihitung departemen baru.
 - **Kolom saldo format baru (AT–AW, SK = QC)**: AQ GANTI HARI = hari kerja − target (rumus, tidak ditimpa), AT LAMA, AU BARU, AV TOTAL, AW SISA. Aplikasi mengisi LAMA dari riwayat per NIK bagi pindahan / baris yang LAMA-nya kosong atau error (VLOOKUP ke file bulan lalu).
+
+### Aturan pola PWS & memori (perbaikan 9 Nov 2026)
+- Pola PWS dari departemen lain **hanya dari bulan yang sama** (unggahan ③ didahulukan, lalu HRD tersimpan bulan itu). Pola bulan lain tidak dipakai karena kalendernya beda; pola 05D0nn yang hilang diturunkan dari HRD departemen sendiri.
+- Orang yang ada di Jadwal tetapi belum ada di HRD: dicari di riwayat (revisi terakhir departemen lain / departemen sendiri); PWS lama = PWS terakhir di riwayat. Hanya bila tidak ada jejak sama sekali = karyawan baru (QC: PWS lama 05D002).
+- Bulan di file HRD dibaca dari sel mana pun di 3 baris atas (A–K) dan divalidasi; kolom "Total" tidak lagi terbaca sebagai hari.
+- 05D035 di QC: tetap dibuatkan perubahan regu dan perubahan jadwal bila jadwal berbeda dari HRD.
+
+### QC: perubahan regu dari jam kerja, dan satu halaman OFF/MASUK (9 Nov 2026)
+- Bila kolom PWS di Jadwal tidak sesuai jam kerjanya (≥40% hari kerja di luar pola), regu diturunkan otomatis dari kode jam (DSnn → 05D0nn): segmen minimal 3 hari kerja beruntun, tanggal efektif = hari kerja pertama segmen. Satu orang bisa punya lebih dari satu baris di PERUBAHAN REGU (mis. 05D035→05D007 tgl 1, lalu 05D007→05D002 tgl 9) dan tidak lagi masuk sheet R0. PWS di riwayat = PWS segmen terakhir.
+- R0: bila total baris OFF + MASUK ≤ 19, keduanya digabung satu sheet "OFF & MASUK" (satu halaman, urutan tim, per orang OFF lalu MASUK); bila banyak tetap sheet OFF dan MASUK terpisah per tim.
+
+### Karyawan harian lepas (PWS HRD 05D035 / FRE1 selamanya) - QC
+- `daily_pws` di `core/depts.py`. Bila ada riwayat departemen (revisi terakhir bulan-bulan sebelumnya), PWS lama = PWS di riwayat (bukan 05D035), jadi regu 05D035→... tidak berulang tiap bulan; hanya perubahan jadwal harian (mis. DS02→OFF, OFF→DS08) dengan kode lama dari riwayat. Regu hanya bila PWS berubah dari riwayat atau jam berganti di tengah bulan (kasus Nova/Wardoyo). Tanpa riwayat: perilaku semula (regu dari 05D035).
+- Harian lepas: perubahan jam yang berlaku seterusnya sampai akhir bulan (≥3 hari kerja beruntun, kolom PWS Jadwal belum diperbarui) dibuat sebagai regu dari PWS riwayat; tukar 1-2 hari atau blok yang kembali ke jadwal lama = perubahan jadwal.

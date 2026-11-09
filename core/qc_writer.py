@@ -5,6 +5,7 @@ from lxml import etree
 from .consts import HOURS, REGU_TXT, BULAN_ID, BULAN_ABBR, ym_label
 from .inf_writer import (Sheet, q, XDR, col_of, rownum, setcell, clear_row, fix_cached, fmt_dates, hrs)
 from . import qc_layout
+from .engine import regus_of
 
 # penulisan kode di form QC mengikuti contoh (huruf O pada DSO4 / DSO2)
 SHOW = {'DS04': 'DSO4', 'DS02': 'DSO2'}
@@ -99,24 +100,24 @@ def _regu_sheet(W, D, people, regu_name, BULAN, date_txt, teams=None):
     rows = {int(r.get('r')): r for r in root.find(q('sheetData'))}
     for r in list(range(12, 58)) + list(range(69, 115)):
         if r in rows: clear_row(rows[r])
-    ps = [p for p in people if p['regu']]
-    if len(ps) > 46: raise ValueError('Form PERUBAHAN REGU hanya muat 46 orang (2 halaman).')
+    rows_of = lambda lst: [(p, g) for p in lst for g in regus_of(p)]            # satu baris per perubahan (satu orang bisa >1)
+    ps = rows_of(people)
+    if len(ps) > 46: raise ValueError('Form PERUBAHAN REGU hanya muat 46 baris (2 halaman).')
     # urutan mengikuti tim (halaman OFF/MASUK); bila lebih dari 23 orang dibagi dua halaman seimbang (mis. 37 -> 18 + 19), nomor mulai 1 tiap halaman
-    ps = [p for t in (teams or []) for p in t if p['regu']] or ps
+    ps = [x for t in (teams or []) for x in rows_of(t)] or ps
     if len(ps) <= 23: pages = [ps]
     else:
         k = len(ps) // 2; pages = [ps[:k], ps[k:]]
         tid = {p['nik']: ti for ti, t in enumerate(teams or []) for p in t}
-        if tid.get(ps[k - 1]['nik']) == tid.get(ps[k]['nik']):
+        if tid.get(ps[k - 1][0]['nik']) == tid.get(ps[k][0]['nik']):
             # tim terbelah dua halaman: foreman tim (orang pertama tim itu) menjadi baris pertama halaman 2, seperti form manual
-            F = next((p for p in ps if tid.get(p['nik']) == tid.get(ps[k]['nik'])), None)
+            F = next((x for x in ps if tid.get(x[0]['nik']) == tid.get(ps[k][0]['nik'])), None)
             if F is not None and F in pages[0] and F is not ps[0]:
-                rest = [p for p in ps if p is not F]; pages = [rest[:k], [F] + rest[k:]]
+                rest = [x for x in ps if x is not F]; pages = [rest[:k], [F] + rest[k:]]
     slots = []
     for pi, g in enumerate(pages):
         for k, p in enumerate(g): slots.append(((12 if pi == 0 else 69) + 2 * k, k + 1, p))
-    for r0, num, p in slots:
-        g = p['regu']
+    for r0, num, (p, g) in slots:
         a, b = rows[r0], rows[r0 + 1]
         for col, v in [('A', num), ('B', int(p['nik'])), ('C', p['nama_hrd'] if regu_name == 'hrd' else p['nama']),
                        ('I', 'QC'), ('J', g['lama']), ('L', g['baru']), ('N', f"{g['tgl']} {BULAN}"), ('R', 'Kebutuhan Produksi')]:
@@ -219,7 +220,14 @@ def render_qc(plan, rev, gen_date, template, out_path, cfg, teams=None, bulk_pct
 
     if rev == 0:
         kinds = qc_layout.split_kinds(plan); info['bulk'] = []
-        for kind, nm in (('off', 'OFF'), ('on', 'MASUK')):
+        n_rows = sum(len(v) for k_ in ('off', 'on') for v in kinds[k_].values())
+        merged = 0 < n_rows <= CAP and (kinds['off'] or kinds['on'])
+        if merged:       # sedikit perubahan: OFF dan MASUK digabung satu halaman (urutan tim, per orang: OFF lalu MASUK)
+            rows = [(p['nik'], p['nama'], e[0], e[1], e[2]) for team in tm for p in team
+                    for k_ in ('off', 'on') for e in kinds[k_].get(p['nik'], [])]
+            x, d, last = _list_sheet(W, D, [rows], date_txt, BULAN, alasan); add('OFF & MASUK', x, d, last)
+            info['bulk'].append(('off+on', len({r[0] for r in rows}), len(rows)))
+        for kind, nm in ((() if merged else (('off', 'OFF'), ('on', 'MASUK')))):
             pages = []
             for team in tm:     # tiap tim = satu halaman (urutan tim mengikuti form manual)
                 rows = [(p['nik'], p['nama'], e[0], e[1], e[2]) for p in team for e in kinds[kind].get(p['nik'], [])]

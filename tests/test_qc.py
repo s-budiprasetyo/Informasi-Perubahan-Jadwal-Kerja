@@ -62,7 +62,7 @@ def test_r1_r2_qc(tmp_path):
     assert [x['nik'] for x in ch] == ['93']
     out2 = str(tmp_path / 'q2.xlsx'); assert render('QC', plan2, 2, datetime.date(2026, 10, 25), out2)['sheets'] == ['R2']
     # regu berubah di R1 -> sheet PERUBAHAN REGU muncul
-    j3 = copy.deepcopy(jad); next(x for x in j3['people'] if x['nik'] == '416')['pws'] = '05D008'
+    j3 = copy.deepcopy(jad); x3 = next(x for x in j3['people'] if x['nik'] == '416'); x3['pws'] = '05D008'; x3['days'] = ['DS08' if d != 'OFF' else 'OFF' for d in x3['days']]
     plan3, _ = engine.compute(j3, hrd['rows'], snap0, {}, None, cfg)
     info = render('QC', plan3, 1, datetime.date(2026, 10, 20), str(tmp_path / 'q3.xlsx'))
     assert info['sheets'] == ['R1', 'PERUBAHAN REGU'] and info['regu'] == 1

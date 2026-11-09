@@ -134,12 +134,23 @@ class Store:
         return sorted({r[0] for r in self.db.execute('SELECT DISTINCT dept FROM revisions UNION SELECT DISTINCT dept FROM hrd')})
 
     def other_patterns(self, dept, ym):
-        """Pola PWS dari HRD departemen lain (bulan terakhir yang tersimpan)."""
+        """Pola PWS dari HRD departemen lain pada bulan YANG SAMA (pola bulan lain berbeda kalendernya, tidak dipakai)."""
         pat = {}
         for od in [d for d in self.all_depts() if d != dept]:
-            _, h = self.latest_hrd(od, ym)
+            h = self.get_hrd(od, ym)
             for s in (h or {}).values(): pat.setdefault(s['pws'], s['days'])
         return pat
+
+    def own_memory(self, dept, ym, nik):
+        """Jejak karyawan di departemen yang SAMA pada revisi terakhir bulan-bulan sebelumnya (untuk orang yang belum ada di HRD)."""
+        nik = nn(nik)
+        for y in sorted({r[0] for r in self.db.execute('SELECT DISTINCT ym FROM revisions WHERE dept=? AND ym<?', (dept, ym))}, reverse=True):
+            for rv in reversed(self.revs(dept, y)):
+                q = {nn(p['nik']): p for p in self.get_rev(dept, y, rv)['snapshot']['people']}.get(nik)
+                if q:
+                    return dict(pws=q['pws'], nama=q.get('nama_hrd') or q['nama'], dept=dept, days=q['days'], total=None,
+                                ym=y, source=f'riwayat {dept} R{rv} {y}', cur=False, own=True)
+        return None
 
     # ---- keputusan lonceng
     def save_decisions(self, dept, ym, dec):

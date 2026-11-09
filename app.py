@@ -15,6 +15,7 @@ from core import qc_layout
 from core.render import render
 from core.jadwal_out import make_jadwal
 from core.sheetbal import read_balances
+from core.xmem import build_xmem
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, 'assets', 'template_inf.xlsx')
@@ -136,9 +137,9 @@ def plan_tables(plan):
         if p['ents']:
             ch.append({'NIK': p['nik'], 'Nama': p['nama_hrd'], 'Seksi': p['seksi'], 'PWS': p['pws'],
                        'Jumlah hari': sum(len(e[2]) for e in p['ents']), 'Perubahan (lama→baru: tanggal)': fmt_ents(p)})
-        if p['regu']:
-            rg.append({'NIK': p['nik'], 'Nama': p['nama_hrd'], 'Seksi': p['seksi'], 'Dari': p['regu']['lama'],
-                       'Ke': p['regu']['baru'], 'Tgl efektif': p['regu']['tgl']})
+        for g_ in engine.regus_of(p):
+            rg.append({'NIK': p['nik'], 'Nama': p['nama_hrd'], 'Seksi': p['seksi'], 'Dari': g_['lama'],
+                       'Ke': g_['baru'], 'Tgl efektif': g_['tgl']})
     return pd.DataFrame(ch), pd.DataFrame(rg)
 
 
@@ -284,24 +285,7 @@ if page == 'Buat Jadwal':
             if xh['ym'] and xh['ym'] != ym: st.error(f"HRD departemen lain berisi bulan {xh['ym']}, bukan {ym}."); st.stop()
         except Exception as e:
             st.error(f'HRD departemen lain tidak terbaca: {e}'); st.stop()
-    prev_by_n = {p['nik'] for p in prev['people']} if prev else set()
-    xmem = dict(people={}, pat=dict(store.other_patterns(dept, ym)), moved_out={})
-    if x_rows:
-        for s_ in x_rows.values(): xmem['pat'].setdefault(s_['pws'], s_['days'])
-    for p_ in jad['people']:
-        n_ = p_['nik']
-        if n_ in prev_by_n or (hrd_rows and n_ in hrd_rows): continue
-        if x_rows and n_ in x_rows:
-            s_ = x_rows[n_]; xmem['people'][n_] = dict(pws=s_['pws'], nama=s_['nama'], dept=others[0], total=None, source='HRD departemen lain (unggahan)')
-        else:
-            m_ = store.person_memory(dept, ym, n_)
-            if m_: xmem['people'][n_] = m_
-    if hrd_rows and not prev:
-        jn = {p_['nik'] for p_ in jad['people']}
-        for n_ in hrd_rows:
-            if n_ not in jn:
-                m_ = store.person_memory(dept, ym, n_)
-                if m_ and m_['source'] != 'HRD' and m_['cur']: xmem['moved_out'][n_] = m_
+    xmem = build_xmem(store, dept, ym, jad, hrd_rows, prev, x_rows, others[0] if others else None, cfg)
     anoms = engine.detect(jad, hrd_rows, prev, cfg, xmem)
     saved = store.get_decisions(dept, ym)
     ACT = ('pws_mismatch', 'hrd_only', 'jadwal_only')

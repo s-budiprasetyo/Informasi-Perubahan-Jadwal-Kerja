@@ -11,6 +11,7 @@ DEPTS = {
     'QC': dict(
         label='Quality Control', kind='qc', template='template_qc.xlsx',
         exempt_pws=(),
+        daily_pws=('05D035',),         # harian lepas (FRE1, HRD selalu 05D035 = masuk Senin-Jumat): jadwal lama dari riwayat, bukan HRD
         regu_name='jadwal', filename='INF_PERB_JADWAL_JAM_KERJA_QC',
         hrd_hint='23. QC',
         new_person_pws='05D002',       # karyawan baru: PWS lama (dasar) = 05D002, lalu dibuatkan perubahan regu

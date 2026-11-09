@@ -76,13 +76,16 @@ def parse_hrd(f):
     """-> dict(ym, rows={nik: dict(nik,dept,nama,pws,days,total)})"""
     wb = _wb(f)
     ws = wb.active
-    ym = parse_month_text(ws['B2'].value) or parse_month_text(ws['A2'].value)
-    nd = month_len(ym) if ym else 31
+    ym = None
+    for r in range(1, 4):                       # judul bulan bisa di kolom mana saja (A/B/C ...)
+        for c in range(1, 12):
+            ym = ym or parse_month_text(ws.cell(r, c).value)
     hdr = 4
     tot_col = None
     for c in range(1, ws.max_column + 1):
         if 'TOTAL' in str(ws.cell(hdr, c).value or '').upper():
             tot_col = c
+    nd = month_len(ym) if ym else ((tot_col - 5) if tot_col else 31)    # kolom tanggal berakhir sebelum kolom Total
     rows = {}
     for r in range(hdr + 1, ws.max_row + 1):
         nik = ws.cell(r, 1).value
