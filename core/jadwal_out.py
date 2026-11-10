@@ -45,6 +45,24 @@ def _recap_map(data, title):
     return cuti, open_, rows, (None if new_layout else lebih)
 
 
+def _pws_col(data, title):
+    """Kolom 'PWS' (label persis 'PWS') pada baris header + nilai sekarang per NIK: (col, {nik: (baris, nilai)})."""
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=False, data_only=True)
+    ws = wb[title]; col = nik_c = hdr = None
+    for r in range(1, 15):
+        for c in range(1, 60):
+            v = str(ws.cell(r, c).value or '').strip().upper()
+            if v == 'PWS' and col is None: col, hdr = c, r
+            if 'PRN SAP' in v and nik_c is None: nik_c = c
+        if col and nik_c: break
+    cur = {}
+    if col and nik_c:
+        for r in range(hdr + 1, ws.max_row + 1):
+            n = nn(ws.cell(r, nik_c).value)
+            if n and n not in cur: cur[n] = (r, str(ws.cell(r, col).value or '').strip())
+    return col, cur
+
+
 def _setnum(root, ref, val):
     """Isi angka di sel; buat sel bila belum ada (urut kolom). Mengembalikan True bila diisi."""
     col = re.match(r'[A-Z]+', ref).group(); rown = int(ref[len(col):]); ci = column_index_from_string(col)
@@ -83,7 +101,7 @@ def _setcell(root, ref, text):
     return False
 
 
-def make_jadwal(data, rev, gen_date, recap=None):
+def make_jadwal(data, rev, gen_date, recap=None, pws_fix=None):
     """recap: {nik: {'open': saldo awal, 'lebih': lebih hari, 'cuti': potong cuti}} -> MENIMPA kolom saldo awal / ganti hari / potong cuti
     di Jadwal Kerja (hanya dipakai bila pengguna memilih data historis aplikasi, atau saat unduh ulang dari Riwayat)."""
     title, rev_ref, date_ref = _locate(data)
@@ -103,6 +121,11 @@ def make_jadwal(data, rev, gen_date, recap=None):
             if not r: continue
             for c, k in ((cuti_c, 'cuti'), (open_c, 'open'), (lebih_c, 'lebih')):
                 if c and rc.get(k) is not None: _setnum(root, f'{get_column_letter(c)}{r}', rc[k])
+    if pws_fix:       # kolom PWS disamakan dengan PWS terakhir hasil aplikasi (kolom lain, termasuk kolom F tersembunyi, tidak disentuh)
+        pc, cur = _pws_col(data, title)
+        for nik, w in pws_fix.items():
+            row = cur.get(nn(nik))
+            if pc and row and w and row[1] != str(w): _setcell(root, f'{get_column_letter(pc)}{row[0]}', str(w))
     out = io.BytesIO()
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         for item in zin.infolist():

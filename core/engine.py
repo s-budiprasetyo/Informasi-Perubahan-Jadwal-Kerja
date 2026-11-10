@@ -80,16 +80,22 @@ def hrd_eff(s, nik, xmem, cfg):
     return s
 
 
-def tail_change(act, old, min_run=3):
+def tail_change(act, old, min_run=3, pat=None):
     """Harian lepas: jam masuk berganti dan berlaku seterusnya sampai akhir bulan (>= min_run hari kerja beruntun, kode DSnn
     di luar PWS lama) -> segmen [PWS lama, PWS baru]. Tukar 1-2 hari atau blok yang kembali ke jadwal lama bukan perubahan regu."""
-    sg = day_segments(act, min_run)
+    sg = day_segments(act, min_run, old, pat)
     return sg if sg and len(sg) == 2 and sg[0][0] == old and sg[-1][0] != old else None
 
 
 def regus_of(p):
     """Daftar perubahan regu seorang karyawan (bisa lebih dari satu dalam sebulan); kompatibel dengan plan lama."""
     return p.get('regus') if p.get('regus') is not None else ([p['regu']] if p.get('regu') else [])
+
+
+def _mask(act, repl):
+    """Hari pengganti (sel biru) dianggap libur saat menentukan pola/tanggal regu; tetap masuk sebagai perubahan jadwal."""
+    r = set(repl or [])
+    return [('OFF' if (i + 1) in r else c) for i, c in enumerate(act)] if r else list(act)
 
 
 def mismatch(pws, act, pat):
@@ -101,22 +107,25 @@ def mismatch(pws, act, pat):
     return bool(worked) and sum(1 for c in worked if c not in known) >= len(worked) * 0.4
 
 
-def day_segments(act, min_run=3):
-    """Pecah jadwal hari-kerja (kode DSnn) menjadi segmen PWS berurutan: [(pws, tanggal_mulai)].
-    Segmen minimal `min_run` hari kerja beruntun (kode lain yang hanya sekali-dua kali = tukar hari biasa, bukan ganti regu).
-    Hanya untuk kode DSnn (-> 05D0nn); None bila ada kode lain atau tidak ada segmen."""
+def day_segments(act, min_run=3, old=None, pat=None):
+    """Pecah jadwal hari-kerja menjadi segmen PWS berurutan: [(pws, tanggal_mulai)].
+    Segmen minimal `min_run` hari kerja beruntun (kode lain 1-2 kali = tukar hari biasa, bukan ganti regu).
+    Kode yang ada di pola PWS lama = PWS lama; kode DSnn lain -> 05D0nn; selain itu None (tidak bisa diturunkan)."""
+    old_codes = {x for x in pat[old] if x != 'OFF'} if (old and pat and old in pat) else set()
     runs = []
     for i, c in enumerate(act):
         if c == 'OFF': continue
         if runs and runs[-1][0] == c: runs[-1][2] += 1
         else: runs.append([c, i + 1, 1])
     runs = [r for r in runs if r[2] >= min_run]
-    if not runs or any(not re.fullmatch(r'DS\d\d', r[0]) for r in runs): return None
     segs = []
     for c, st, _ in runs:
-        w = '05D0' + c[2:]
+        if c in old_codes: w = old
+        elif re.fullmatch(r'DS\d\d', c): w = '05D0' + c[2:]
+        else: return None
         if segs and segs[-1][0] == w: continue
         segs.append((w, st))
+    if not segs: return None
     segs[0] = (segs[0][0], 1)
     return segs
 
@@ -181,7 +190,7 @@ def detect(jad, hrd_rows, prev=None, cfg=None, xmem=None):
                             msg=f"PWS {p['pws']} tidak punya pola di file HRD - dilewati."))
             continue
         hp = s['pws'] if s and s['pws'] in pat else p['pws']
-        act = p['days'][:nd]
+        act = _mask(p['days'][:nd], p.get('repl'))        # hari pengganti (sel biru) tidak menentukan tanggal regu
         E0 = effective_date(act, pat[p['pws']]) if p['pws'] in pat else 1
         worked = [c for c in act[E0 - 1:] if c != 'OFF']
         codes = lambda w: {x for x in pat[w] if x != 'OFF'}
@@ -194,7 +203,7 @@ def detect(jad, hrd_rows, prev=None, cfg=None, xmem=None):
             out.append(dict(kind='pws_mismatch', nik=nik, nama=p['nama'], declared=p['pws'], suggest=sug,
                             options=sorted({p['pws'], sug}),
                             msg=(f"Kolom PWS di Jadwal ({p['pws']}) tidak sama dengan jam kerjanya ({bad} dari {len(worked)} hari kerja memakai kode di luar pola). "
-                                 'Perubahan regu diturunkan otomatis dari jam kerja di Jadwal.') if cfg.get('kind') == 'qc' else
+                                 'Perubahan regu diturunkan otomatis dari jam kerja di Jadwal.') if (lambda sg: sg and (len(sg) > 1 or sg[0][0] != hp))(day_segments(act, 3, hp, pat)) else
                                 f"Kode PWS di Jadwal ({p['pws']}) tidak cocok dengan pola harinya "
                                 f"({bad} dari {len(worked)} hari kerja memakai kode di luar pola PWS). Disarankan: {sug}."))
     for p in jad['people']:
@@ -246,7 +255,7 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
                                       days=list(s['days'][:nd])))
     plan_people, snap_people, skipped, starts = [], [], [], {}
     for j in people_in:
-        nik = j['nik']; act = j['days'][:nd]
+        nik = j['nik']; act = j['days'][:nd]; actm = _mask(act, j.get('repl'))
         s = hrd_eff(hrd_rows.get(nik) if hrd_rows else None, nik, xmem, cfg)
         d = decisions.get(nik)
         synthetic = False; mover = None
@@ -261,11 +270,11 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
             q = prev_by[nik]
             base = q['days'][:nd]; old = q['pws']
             exempt = q.get('exempt', False)
-            if cfg.get('kind') == 'qc' and mismatch(j['pws'], act, pat):      # kolom PWS Jadwal belum diperbarui: pakai PWS dari jam kerja terakhir
-                sg = day_segments(act)
+            if (cfg.get('kind') == 'qc' or j['pws'] == old) and mismatch(j['pws'], actm, pat):      # kolom PWS Jadwal belum diperbarui: pakai PWS dari jam kerja terakhir
+                sg = day_segments(actm, 3, old, pat)
                 if sg and ensure_pat(pat, sg[-1][0]): new = sg[-1][0]
             if not _same_pws(old, new) and new in pat:
-                regu = dict(lama=old, baru=new, tgl=effective_date(act, pat[new]))
+                regu = dict(lama=old, baru=new, tgl=effective_date(actm, pat[new]))
         else:
             if not s:
                 skipped.append(nik); continue
@@ -273,9 +282,9 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
             if old in exempt_pws: old = '05D004'
             if s.get('hist'): ensure_pat(pat, s['pws'])
             segs = None; seg_regus = None
-            tail = bool(s.get('hist')) and j['pws'] == s['pws'] and tail_change(act, s['pws'])
-            if cfg.get('kind') == 'qc' and not synthetic and old in pat and s['pws'] not in exempt_pws and (mismatch(j['pws'], act, pat) or tail):
-                segs = day_segments(act)       # kolom PWS Jadwal belum diperbarui: regu diturunkan dari jam kerja (bisa lebih dari satu perubahan)
+            tail = bool(s.get('hist')) and j['pws'] == s['pws'] and tail_change(actm, s['pws'], 3, pat)
+            if not synthetic and old in pat and s['pws'] not in exempt_pws and (cfg.get('kind') == 'qc' or j['pws'] == s['pws']) and (mismatch(j['pws'], actm, pat) or tail):
+                segs = day_segments(actm, 3, old, pat)       # kolom PWS Jadwal belum diperbarui: regu diturunkan dari jam kerja (bisa lebih dari satu perubahan)
                 if segs and not all(ensure_pat(pat, w) for w, _ in segs): segs = None
             if segs:
                 base = [None] * nd; seg_regus = []; prevp = old
@@ -287,7 +296,7 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
             else:
                 if new not in pat or old not in pat:
                     skipped.append(nik); continue
-                base, regu, exempt = blend_base(s['pws'], new, act, pat, exempt_pws)
+                base, regu, exempt = blend_base(s['pws'], new, actm, pat, exempt_pws)
             base = list(base)
             # karyawan baru di tengah bulan: libur sebelum tanggal masuk bukan perubahan jadwal
             k0 = next((i for i, x in enumerate(act) if x != 'OFF'), None)

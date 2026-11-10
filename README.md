@@ -92,3 +92,17 @@ Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.
 ### Karyawan harian lepas (PWS HRD 05D035 / FRE1 selamanya) - QC
 - `daily_pws` di `core/depts.py`. Bila ada riwayat departemen (revisi terakhir bulan-bulan sebelumnya), PWS lama = PWS di riwayat (bukan 05D035), jadi regu 05D035→... tidak berulang tiap bulan; hanya perubahan jadwal harian (mis. DS02→OFF, OFF→DS08) dengan kode lama dari riwayat. Regu hanya bila PWS berubah dari riwayat atau jam berganti di tengah bulan (kasus Nova/Wardoyo). Tanpa riwayat: perilaku semula (regu dari 05D035).
 - Harian lepas: perubahan jam yang berlaku seterusnya sampai akhir bulan (≥3 hari kerja beruntun, kolom PWS Jadwal belum diperbarui) dibuat sebagai regu dari PWS riwayat; tukar 1-2 hari atau blok yang kembali ke jadwal lama = perubahan jadwal.
+
+### Sel rumus di file Excel (10 Nov 2026)
+- Jadwal Kerja dan HRD dibaca dari **hasil rumus yang tersimpan** (bukan teks rumus / ArrayFormula). Kalau ada sel rumus tanpa hasil tersimpan, aplikasi berhenti dengan pesan jelas (buka di Excel, Ctrl+S, unggah lagi), bukan menghasilkan perubahan palsu.
+
+### Hari pengganti (sel biru) - 10 Nov 2026
+- Sel Jadwal Kerja berwarna biru muda = hari pengganti penutup kurang hari. Tetap dihitung sebagai hari masuk (perubahan jadwal OFF→kode, dan mengurangi saldo), tetapi tidak dipakai menentukan tanggal efektif perubahan regu.
+- SK: bila kolom PWS di Jadwal sama dengan HRD tetapi jam kerjanya berganti seterusnya (mis. shift → DS02), regu diturunkan dari jam kerja (Burhanul 2G0302→05D002 tgl 9). Label PWS yang keliru (Erwin) tetap perilaku lama.
+
+### Kolom PWS di Jadwal Kerja hasil (10 Nov 2026)
+- Jadwal Kerja hasil generate (dan unduh ulang dari Riwayat) memperbaiki kolom **PWS** menjadi PWS terakhir hasil aplikasi (mis. Erwin 05D002→2G0301, Burhanul 2G0302→05D002). Hanya sel PWS yang berbeda yang diubah; kolom F (tersembunyi, PWS lama manual) dan sel lain tidak disentuh.
+- Lonceng 🔔 menampilkan info "kolom PWS di Jadwal tidak sama dengan PWS terakhir" (tidak menahan Generate).
+
+### Riwayat: unggah Jadwal Kerja untuk revisi lama
+Revisi yang disimpan sebelum berkas Jadwal Kerja ikut tersimpan tidak punya tombol unduh Jadwal. Di menu Riwayat, unggah Jadwal Kerja revisi itu sekali; berkas disimpan di database dan tombol unduh muncul (dengan revisi, tanggal, saldo, dan PWS diperbarui).

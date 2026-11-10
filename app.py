@@ -304,11 +304,14 @@ if page == 'Buat Jadwal':
                             txt=f"kurang {d:g} hari" if d > 0 else f"lebih {-d:g} hari"))
     # Lonceng: hanya yang perlu diputuskan pengguna = ada di HRD tetapi tidak ada di Jadwal Kerja (+ PWS orang baru bila belum bisa ditentukan).
     # Selisih hari kerja hanya informasi. Selebihnya diputuskan otomatis dari data HRD dan dicatat di "Keputusan otomatis".
+    jdecl = {p['nik']: p['pws'] for p in jad['people']}
+    lbl = [dict(nik=p['nik'], nama=p['nama'], tertulis=jdecl.get(p['nik']), dipakai=p['pws']) for p in snap['people']
+           if jdecl.get(p['nik']) and jdecl[p['nik']] != p['pws']]
     todo = [a for a in anoms if a['kind'] == 'hrd_only' or (a['kind'] == 'jadwal_only' and a['default'] == '(pilih)')]
     auto = [a for a in anoms if a not in todo]
     top = st.columns([6, 1])
-    with top[1].popover(f'🔔 {len(todo) + (1 if sel else 0)}', use_container_width=True):
-        if not todo and not sel: st.write('Tidak ada yang perlu diputuskan.')
+    with top[1].popover(f'🔔 {len(todo) + (1 if sel else 0) + (1 if lbl else 0)}', use_container_width=True):
+        if not todo and not sel and not lbl: st.write('Tidak ada yang perlu diputuskan.')
         for a in todo:
             st.markdown(f"**{a['nama']}** ({a['nik']})  \n{a['msg']}")
             if a['kind'] == 'jadwal_only':
@@ -322,6 +325,11 @@ if page == 'Buat Jadwal':
         if sel:
             st.markdown(f'**Info: selisih hari kerja di Jadwal dibanding target HRD** ({len(sel)} orang)')
             st.dataframe(pd.DataFrame([{'NIK': x['nik'], 'Nama': x['nama'], 'Hari kerja': x['worked'], 'Target HRD': x['target'], 'Selisih': x['txt']} for x in sel]),
+                         use_container_width=True, hide_index=True)
+        if lbl:
+            st.markdown(f'**Info: kolom PWS di Jadwal Kerja tidak sama dengan PWS terakhir** ({len(lbl)} orang)  \n'
+                        'Aplikasi memakai PWS terakhir (dari jam kerja, riwayat, dan HRD) dan **memperbaiki kolom PWS** di Jadwal Kerja hasil generate.')
+            st.dataframe(pd.DataFrame([{'NIK': x['nik'], 'Nama': x['nama'], 'Tertulis di Jadwal': x['tertulis'], 'PWS dipakai': x['dipakai']} for x in lbl]),
                          use_container_width=True, hide_index=True)
         if auto:
             with st.expander(f'Keputusan otomatis ({len(auto)})'):
@@ -396,7 +404,7 @@ if page == 'Buat Jadwal':
         st.session_state['out'] = dict(
             dept=dept, ym=ym, rev=rev, info=info, plan=plan, snap=snap, basis=basis, decisions=decisions, holidays=holidays,
             jname=f_j.name, jbytes=f_j.getvalue(), hname=f_h.name if f_h else '', hrd_rows=hrd_rows if f_h else None,
-            inf=(file_name(dept, ym, rev), data), jad=(jadwal_name(dept, ym, rev), make_jadwal(f_j.getvalue(), rev, gen, recap_of(snap, bal_mode, bal_file))),
+            inf=(file_name(dept, ym, rev), data), jad=(jadwal_name(dept, ym, rev), make_jadwal(f_j.getvalue(), rev, gen, recap_of(snap, bal_mode, bal_file), {p['nik']: p['pws'] for p in snap['people']})),
             bal_mode=bal_mode, saved=False, xhrd=(others[0], x_rows) if x_rows else None)
         st.session_state.pop('bk', None)
     o = st.session_state.get('out')
@@ -425,9 +433,19 @@ elif page == 'Riwayat':
     data, info = render_bytes(d_, rec['plan'], r_, datetime.date.today())
     c1, c2 = st.columns(2)
     jf = store.get_file(d_, y_, r_)
-    if jf: c1.download_button('⬇️ Unduh Jadwal Kerja (tanggal header = hari ini)', make_jadwal(jf[1], r_, datetime.date.today(), recap_from_ledger(d_, y_)),
+    if jf: c1.download_button('⬇️ Unduh Jadwal Kerja (tanggal header = hari ini)', make_jadwal(jf[1], r_, datetime.date.today(), recap_from_ledger(d_, y_), {p['nik']: p['pws'] for p in rec['plan']['people']}),
                               jadwal_name(d_, y_, r_), XL, use_container_width=True)
-    else: c1.info('Berkas Jadwal Kerja revisi ini tidak tersimpan di database ini.')
+    else:
+        c1.info('Berkas Jadwal Kerja revisi ini belum tersimpan di database (revisi lama). Unggah Jadwal Kerja revisi ini di bawah, sekali saja, '
+                'lalu berkasnya tersimpan dan tombol unduh muncul.')
+        up = st.file_uploader(f'Unggah Jadwal Kerja {d_} {ym_label(y_)} R{r_}', type=['xlsx'], key=f'attach_{d_}_{y_}_{r_}')
+        if up is not None:
+            try:
+                make_jadwal(up.getvalue(), r_, datetime.date.today())      # uji: format Jadwal Kerja dikenali
+                store.save_file(d_, y_, r_, up.name, up.getvalue())
+                push_async(); st.rerun()
+            except Exception as e:
+                st.error(f'Berkas tidak bisa dipakai: {e}')
     c2.download_button('⬇️ Unduh Informasi Perubahan Jadwal (tanggal header = hari ini)', data, file_name(d_, y_, r_), XL,
                        type='primary', use_container_width=True)
     with st.expander('🗑️ Hapus revisi ini'):

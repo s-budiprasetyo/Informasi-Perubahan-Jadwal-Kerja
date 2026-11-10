@@ -203,3 +203,68 @@ def test_tail_change_rules():
     assert tail_change(two, '05D002') is None                       # 1-2 hari = perubahan jadwal, bukan regu
     blk = list(base); blk[9] = blk[10] = blk[11] = 'DS08'
     assert tail_change(blk, '05D002') is None                       # blok yang kembali ke jadwal lama
+
+
+def test_formula_cells_read_from_cached_values(tmp_path):
+    """Sel hari berisi rumus / ArrayFormula: dibaca dari hasil tersimpan, bukan teks rumus (error SK 10 Nov)."""
+    import os, shutil, subprocess, pytest, openpyxl
+    from openpyxl.worksheet.formula import ArrayFormula
+    from core.parsers import parse_jadwal
+    src = NOV + 'ee74a2ee-JADWAL_SK_NOVEMBER2026.xlsx'
+    if not os.path.exists(src) or not shutil.which('soffice'): pytest.skip('lampiran/soffice tidak ada')
+    ref = parse_jadwal(src)
+    wb = openpyxl.load_workbook(src); ws = wb.active; n = 0
+    for row in ws.iter_rows(min_row=10, max_row=40):
+        for c in row:
+            if 8 <= c.column <= 37 and isinstance(c.value, str) and c.value and not c.value.startswith('='):
+                f = '=IF(1=1,"%s","%s")' % (c.value, c.value)
+                c.value = f if n % 2 == 0 else ArrayFormula(c.coordinate, f); n += 1
+    p = tmp_path / 'af.xlsx'; wb.save(p)
+    with pytest.raises(ValueError, match='tanpa hasil tersimpan'):
+        parse_jadwal(str(p))                                   # rumus tanpa hasil tersimpan -> pesan jelas
+    subprocess.run(['soffice', '--headless', '--convert-to', 'xlsx', '--outdir', str(tmp_path / 'o'), str(p)], capture_output=True, timeout=180)
+    got = parse_jadwal(str(tmp_path / 'o' / 'af.xlsx'))
+    assert [q['days'] for q in got['people']] == [q['days'] for q in ref['people']]
+
+
+def test_book1_blue_days_and_shift_to_day_regu():
+    """Book1 (Jadwal SK Nov): sel rumus '-' terbaca OFF; sel biru = hari pengganti tidak menentukan tanggal regu."""
+    import os, pytest
+    from core import engine
+    from core.parsers import parse_jadwal, parse_hrd
+    from core.depts import DEPTS
+    f = NOV + '79bd8713-Book1.xlsx'
+    if not os.path.exists(f): pytest.skip('lampiran tidak ada')
+    j = parse_jadwal(f); h = parse_hrd(NOV + '73410d62-25._SHUTTLE_KILN_1.xlsx')
+    assert len(j['people']) == 28 and j['target'] == 21
+    assert not any(str(c).startswith('=') or 'Array' in str(c) for p in j['people'] for c in p['days'])
+    by = {p['nik']: p for p in j['people']}
+    assert by['487']['repl'] == [7, 28] and by['890']['repl'] == [1]
+    plan, _ = engine.compute(j, h['rows'], None, {'409': '2G0301'}, None, DEPTS['SK'], [], None)
+    p = next(q for q in plan['people'] if q['nik'] == '487')
+    assert [(g['lama'], g['baru'], g['tgl']) for g in engine.regus_of(p)] == [('2G0302', '05D002', 9)]     # bukan tgl 7 (hari pengganti)
+    e = next(q for q in plan['people'] if q['nik'] == '409')
+    assert not engine.regus_of(e)                                                                        # label PWS keliru: perilaku lama
+
+
+def test_jadwal_output_fixes_pws_column_only(tmp_path):
+    """Jadwal Kerja hasil: kolom PWS diperbaiki (Erwin -> 2G0301, Burhanul -> 05D002); kolom F dan sel lain tidak berubah."""
+    import os, pytest, datetime, openpyxl
+    from core import engine
+    from core.parsers import parse_jadwal, parse_hrd
+    from core.depts import DEPTS
+    from core.jadwal_out import make_jadwal
+    f = NOV + '79bd8713-Book1.xlsx'
+    if not os.path.exists(f): pytest.skip('lampiran tidak ada')
+    j = parse_jadwal(f); h = parse_hrd(NOV + '73410d62-25._SHUTTLE_KILN_1.xlsx')
+    plan, snap = engine.compute(j, h['rows'], None, {'409': '2G0301'}, None, DEPTS['SK'], [], None)
+    fix = {p['nik']: p['pws'] for p in snap['people']}
+    out = make_jadwal(open(f, 'rb').read(), 0, datetime.date(2026, 11, 10), None, fix)
+    p = tmp_path / 'o.xlsx'; p.write_bytes(out)
+    a = openpyxl.load_workbook(f).active; b = openpyxl.load_workbook(p).active
+    diff = {}
+    for row in a.iter_rows():
+        for c in row:
+            v = b[c.coordinate].value
+            if str(c.value) != str(v) and 'ArrayFormula' not in str(c.value): diff[c.coordinate] = (c.value, v)
+    assert diff == {'Y2': ('Gresik, 9 November 2026', 'Gresik, 10 November 2026'), 'G27': ('2G0302', '05D002'), 'G35': ('05D002', '2G0301')}
