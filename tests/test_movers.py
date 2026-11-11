@@ -268,3 +268,54 @@ def test_jadwal_output_fixes_pws_column_only(tmp_path):
             v = b[c.coordinate].value
             if str(c.value) != str(v) and 'ArrayFormula' not in str(c.value): diff[c.coordinate] = (c.value, v)
     assert diff == {'Y2': ('Gresik, 9 November 2026', 'Gresik, 10 November 2026'), 'G27': ('2G0302', '05D002'), 'G35': ('05D002', '2G0301')}
+
+
+def test_sk_harian_lepas_history_and_ganti_hari_rows(tmp_path):
+    """SK: 05D035 mengikuti riwayat bulan lalu (1113/1086 = 05D002, tanpa perubahan); hari pengganti (biru) di sheet SULTON dipisah
+    ke baris sendiri dengan alasan 'Ganti hari (trouble kama)'."""
+    import os, glob, pytest, openpyxl
+    from core.parsers import parse_jadwal, parse_hrd
+    from core.xmem import build_xmem
+    from core.depts import DEPTS
+    from core.inf_writer import render_inf
+    A = NOV
+    need = ['ee74a2ee-JADWAL_SK_NOVEMBER2026.xlsx', '79bd8713-Book1.xlsx', '73410d62-25._SHUTTLE_KILN_1.xlsx']
+    if not all(os.path.exists(A + f) for f in need): pytest.skip('lampiran tidak ada')
+    cfg = DEPTS['SK']; st = Store(':memory:')
+    jo = parse_jadwal(A + need[0])
+    snap = dict(ym='2026-10', people=[dict(nik=p['nik'], nama=p['nama'], nama_hrd=p['nama'], seksi=p['seksi'], pws=p['pws'], days=p['days'],
+                                           exempt=False, target=21, worked=0, kurang=0) for p in jo['people']])
+    st.save_rev('SK', '2026-10', 0, dict(ym='2026-10', people=[], skipped=[], pending=[], holidays=[], starts={}), snap, 'x')
+    jn = parse_jadwal(A + need[1]); hn = parse_hrd(A + need[2])
+    xm = build_xmem(st, 'SK', '2026-11', jn, hn['rows'], None, None, None, cfg)
+    plan, _ = engine.compute(jn, hn['rows'], None, {'409': '2G0301'}, None, cfg, [], xm)
+    by = {p['nik']: p for p in plan['people']}
+    for n in ('1113', '1086'):
+        assert by[n]['pws_lama'] == '05D002' and not by[n]['ents'] and not engine.regus_of(by[n])
+    out = str(tmp_path / 'inf.xlsx')
+    render_inf(plan, 0, datetime.date(2026, 11, 11), glob.glob('assets/template_inf.xlsx')[0] if os.path.exists('assets/template_inf.xlsx') else
+               os.path.join(os.path.dirname(__file__), '..', 'assets', 'template_inf.xlsx'), out)
+    ws = openpyxl.load_workbook(out, data_only=True)['SULTON']
+    rows = [(ws.cell(r, 2).value, str(ws.cell(r, 10).value).replace('\n', ' '), ws.cell(r, 22).value) for r in range(1, ws.max_row + 1) if isinstance(ws.cell(r, 2).value, int)]
+    g = [x for x in rows if x[2] == 'Ganti hari (trouble kama)']
+    assert (213, '1 November 2026', 'Ganti hari (trouble kama)') in g and (870, '8 November 2026', 'Ganti hari (trouble kama)') in g
+    assert not any(n in (1113, 1086) for n, _, _ in rows)
+    prod = [x for x in rows if x[0] == 213 and x[2] != 'Ganti hari (trouble kama)']
+    assert prod and not any(d.startswith('1 Nov') or ', 1,' in d or d.startswith('1,') for _, d, _ in prod)
+
+
+def test_satrio_single_page_and_ganti_reason(tmp_path):
+    """Sheet SATRIO: satu halaman bila muat (bukan dipisah masuk-jam-8 / shift); tanggal hari pengganti beralasan 'Ganti hari (trouble kama)'."""
+    from core.inf_writer import render_inf
+    import openpyxl, os
+    mk = lambda nik, nama, pws, ents, ganti=(): dict(nik=nik, nama=nama, nama_hrd=nama, seksi='QCSK', pws=pws, pws_lama=pws, ents=ents,
+                                                     regu=None, regus=[], exempt=False, mover=None, ganti=list(ganti))
+    plan = dict(ym='2026-11', skipped=[], pending=[], holidays=[], starts={}, people=[
+        mk('943', 'SATRIO', '05D004', [['OFF', 'DS04', [28]]], [28]),
+        mk('897', 'IFAN', '2G0302', [['P004', 'DS04', [11]], ['OFF', 'P004', [28]]], [28])])
+    out = str(tmp_path / 'i.xlsx')
+    info = render_inf(plan, 0, datetime.date(2026, 11, 11), os.path.join(os.path.dirname(__file__), '..', 'assets', 'template_inf.xlsx'), out)
+    assert info['qc_pages'] == [3]
+    ws = openpyxl.load_workbook(out, data_only=True)['SATRIO']
+    why = [(ws.cell(r, 2).value, ws.cell(r, 22).value) for r in range(1, 60) if isinstance(ws.cell(r, 2).value, int)]
+    assert why == [(943, 'Ganti hari (trouble kama)'), (897, 'Kebutuhan Pemenuhan Produksi'), (897, 'Ganti hari (trouble kama)')]

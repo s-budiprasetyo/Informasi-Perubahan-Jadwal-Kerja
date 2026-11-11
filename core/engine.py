@@ -315,7 +315,8 @@ def compute(jad, hrd_rows, prev=None, decisions=None, tgl_over=None, cfg=None, h
         ents = order_entries(diffs(base, act))
         nama_hrd = s['nama'] if s else (prev_by[nik]['nama_hrd'] if nik in prev_by else j['nama'])
         plan_people.append(dict(nik=nik, nama=j['nama'], nama_hrd=nama_hrd, seksi=j['seksi'], pws=new,
-                                pws_lama=old, ents=ents, regu=regu, regus=regus, exempt=exempt, mover=mover))
+                                pws_lama=old, ents=ents, regu=regu, regus=regus, exempt=exempt, mover=mover,
+                                ganti=sorted(j.get('repl') or [])))
         if in_prev:
             target = prev_by[nik].get('target') or jad.get('target') or 22     # target bulan ini dibawa dari revisi sebelumnya
         else:

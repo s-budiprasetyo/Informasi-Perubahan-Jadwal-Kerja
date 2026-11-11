@@ -196,7 +196,7 @@ def test_matches_manual_sk(tmp_path):
     def dump(path):
         wb = openpyxl.load_workbook(path); res = {}
         for ws in wb:
-            res[ws.title] = [[[re.sub(r'\s+', ' ', str(ws.cell(r + k, c).value).strip()) for c in range(1, 30) if ws.cell(r + k, c).value is not None] for k in (0, 1)]
+            res[ws.title] = [[[re.sub(r'\s+', ' ', str(ws.cell(r + k, c).value).strip()) for c in range(1 if ws.title != 'SATRIO' else 2, 30) if ws.cell(r + k, c).value is not None] for k in (0, 1)]
                              for r in range(1, ws.max_row + 1) if isinstance(ws.cell(r, 1).value, int)]
         return res
     a, b = dump(out), dump(man)
@@ -225,6 +225,6 @@ def test_sk_matches_manual_form():
 
     def dump(p):
         wb = openpyxl.load_workbook(p)
-        return {ws.title: [[[re.sub(r'\s+', ' ', str(ws.cell(r + k, c).value).strip()) for c in range(1, 30) if ws.cell(r + k, c).value is not None]
+        return {ws.title: [[[re.sub(r'\s+', ' ', str(ws.cell(r + k, c).value).strip()) for c in range(1 if ws.title != 'SATRIO' else 2, 30) if ws.cell(r + k, c).value is not None]
                             for k in (0, 1)] for r in range(1, ws.max_row + 1) if isinstance(ws.cell(r, 1).value, int)] for ws in wb}
     assert dump(out) == dump(os.path.join(os.path.dirname(__file__), 'fixtures', 'manual_sk_oktober.xlsx'))

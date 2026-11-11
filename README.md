@@ -106,3 +106,8 @@ Unggahan SK26 (kolom ② pada R≥1) dan teks regu untuk PWS 4G01xx.
 
 ### Riwayat: unggah Jadwal Kerja untuk revisi lama
 Revisi yang disimpan sebelum berkas Jadwal Kerja ikut tersimpan tidak punya tombol unduh Jadwal. Di menu Riwayat, unggah Jadwal Kerja revisi itu sekali; berkas disimpan di database dan tombol unduh muncul (dengan revisi, tanggal, saldo, dan PWS diperbarui).
+
+### SK: harian lepas (05D035) ikut riwayat; hari pengganti dipisah (11 Nov 2026)
+- SK kini memakai aturan harian lepas seperti QC: PWS 05D035 di HRD diganti PWS terakhir dari riwayat bulan lalu (mis. 1113 dan 1086 = 05D002), lalu dibandingkan dengan Jadwal Kerja bulan ini. Jika sama, tidak ada perubahan jadwal/regu. Tanpa riwayat: tetap diperlakukan 05D004.
+- Sheet SULTON: tanggal hari pengganti (sel biru di Jadwal Kerja) dipisah ke baris sendiri dengan alasan "Ganti hari (trouble kama)"; baris lain tetap "Kebutuhan Rencana Produksi". Sheet SATRIO tidak berubah.
+- Sheet SATRIO: satu halaman bila muat (tidak lagi dipisah masuk jam 8 / shift); tanggal hari pengganti juga beralasan "Ganti hari (trouble kama)".

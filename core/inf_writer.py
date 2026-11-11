@@ -136,12 +136,21 @@ def split_dates(ds, maxd, balanced):
     return [ds[i:i + maxd] for i in range(0, len(ds), maxd)]
 
 
-def person_rows(p, maxd, balanced):
-    out = []
+GANTI_ALASAN = 'Ganti hari (trouble kama)'
+
+
+def person_rows(p, maxd, balanced, split_ganti=False):
+    """Baris perubahan seorang karyawan: (nik, nama, nama_hrd, lama, baru, tanggal, alasan|None).
+    split_ganti: tanggal hari pengganti (sel biru di Jadwal Kerja) dipisah ke baris sendiri dengan alasan 'Ganti hari (trouble kama)'."""
+    out, gl = [], []
+    g = set(p.get('ganti') or []) if split_ganti else set()
     for a, b, ds in p['ents']:
-        for chunk in split_dates(ds, maxd, balanced):
-            out.append((p['nik'], p['nama'], p['nama_hrd'], a, b, chunk))
-    return out
+        for chunk in split_dates([d for d in ds if d not in g], maxd, balanced) if [d for d in ds if d not in g] else []:
+            out.append((p['nik'], p['nama'], p['nama_hrd'], a, b, chunk, None))
+        gd = [d for d in ds if d in g]
+        for chunk in split_dates(gd, maxd, balanced) if gd else []:
+            gl.append((p['nik'], p['nama'], p['nama_hrd'], a, b, chunk, GANTI_ALASAN))
+    return out + gl
 
 
 def paginate(groups, cap, last_ok_offx):
@@ -194,8 +203,8 @@ def render_inf(plan, rev, gen_date, template, out_path, alasan_kiln='Kebutuhan R
     isday = lambda p: p['pws'] in DAY_PWS
     # ---------------- SULTON (kiln)
     ks = Sheet(W('sheet2.xml'))
-    day = [person_rows(p, 8, False) for p in kiln if isday(p) and p['ents']]
-    shf = [person_rows(p, 8, False) for p in kiln if not isday(p) and p['ents']]
+    day = [person_rows(p, 8, False, True) for p in kiln if isday(p) and p['ents']]
+    shf = [person_rows(p, 8, False, True) for p in kiln if not isday(p) and p['ents']]
     pages = paginate([day, shf], 20, True)
     if len(pages) > 4: raise ValueError(f'Form SULTON butuh {len(pages)} halaman (maks 4).')
     npg = len(pages); info['kiln_pages'] = [len(p) for p in pages]
@@ -206,9 +215,9 @@ def render_inf(plan, rev, gen_date, template, out_path, alasan_kiln='Kebutuhan R
         for k in range(20):
             r0 = starts[pi] + 2 * k
             if k < len(page):
-                nik, nm, full, a, b, ds = page[k]
+                nik, nm, full, a, b, ds, why = page[k]
                 v = {('A', 0): k + 1, ('B', 0): int(nik), ('D', 0): full, ('J', 0): fmt_dates(ds, BULAN, False),
-                     ('V', 0): alasan_kiln}
+                     ('V', 0): why or alasan_kiln}
                 tpl = 50 if k == 19 else (12 if b == 'OFF' else 14 if a == 'OFF' else 72)
                 if b == 'OFF': v.update({('P', 0): a, ('P', 1): hrs(a), ('S', 0): 'OFF'})
                 elif a == 'OFF': v.update({('P', 0): 'OFF', ('S', 0): b, ('S', 1): hrs(b)})
@@ -223,9 +232,9 @@ def render_inf(plan, rev, gen_date, template, out_path, alasan_kiln='Kebutuhan R
     kiln_last = 52 * npg
     # ---------------- SATRIO (QC)
     qs = Sheet(W('sheet1.xml'))
-    day = [person_rows(p, 8, True) for p in qc if isday(p) and p['ents']]
-    shf = [person_rows(p, 8, True) for p in qc if not isday(p) and p['ents']]
-    qpages = paginate([day, shf], 17, False)
+    day = [person_rows(p, 8, True, True) for p in qc if isday(p) and p['ents']]
+    shf = [person_rows(p, 8, True, True) for p in qc if not isday(p) and p['ents']]
+    qpages = paginate([day + shf], 17, False)        # satu halaman bila muat; pindah halaman hanya bila penuh
     if len(qpages) > 4: raise ValueError(f'Form SATRIO butuh {len(qpages)} halaman (maks 4).')
     nq = len(qpages); info['qc_pages'] = [len(p) for p in qpages]
     qstarts = [12, 58, 103, 148]; page_end = [47, 92, 137, 182]
@@ -234,9 +243,9 @@ def render_inf(plan, rev, gen_date, template, out_path, alasan_kiln='Kebutuhan R
         for k in range(17):
             r0 = qstarts[pi] + 2 * k
             if k < len(page):
-                nik, nm, full, a, b, ds = page[k]
+                nik, nm, full, a, b, ds, why = page[k]
                 many = len(ds) > 2
-                v = {('A', 0): k + 1, ('B', 0): int(nik), ('D', 0): nm, ('V', 0): 'Kebutuhan Pemenuhan Produksi'}
+                v = {('A', 0): k + 1, ('B', 0): int(nik), ('D', 0): nm, ('V', 0): why or 'Kebutuhan Pemenuhan Produksi'}
                 if many: v[('J', 0)] = fmt_dates(ds, BULAN, False)
                 else: v[('J', 0)] = fmt_dates(ds, BLN_QC, True); v[('J', 1)] = f'( {len(ds)} Hari )'
                 if b == 'OFF': tpl = 12; v.update({('P', 0): a, ('P', 1): hrs(a), ('S', 0): 'OFF'})

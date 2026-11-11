@@ -3,7 +3,8 @@
 DEPTS = {
     'SK': dict(
         label='Shuttle Kiln', kind='sk', template='template_inf.xlsx',
-        exempt_pws=('05D035',),        # FRE1 diperlakukan 05D004, tanpa form regu
+        exempt_pws=('05D035',),        # tanpa riwayat: FRE1 diperlakukan 05D004, tanpa form regu
+        daily_pws=('05D035',),         # harian lepas (FRE1): jadwal lama diambil dari riwayat bulan lalu, bukan dari HRD
         regu_name='hrd', filename='INF_PERB_JADWAL_JAM_KERJA_SK',
         hrd_hint='25. Shuttle Kiln 1',
         note='Satu file berisi dua seksi: KAMA (foreman Sulton/Fajar) dan QC SK (foreman Satrio), dibedakan kolom SEKSI di Jadwal Kerja.',
